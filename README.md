@@ -8,7 +8,7 @@ NOTE: Everything for the most part 'works' but there are small things you will m
 
 I'm releasing this to help people look into the new wired and properly bring it to their hotel, so again treat this as a sandbox, if you find a problem you can fix it.
 
-IMPORTANT: This must be used in pair with the nitro-react as it contains all the client side stuff, and you will have to update the database with a few updates found in the sql folder for things like variables, chests, etc.
+IMPORTANT: This must be used in pair with the [nitro-react-Wired](https://github.com/iSetht/nitro-react-Wired) as it contains all the client side stuff, and you will have to update the database with a few updates found in the sql folder for things like variables, chests, etc.
 
 Things that exist that you may wonder (Did he add this?):
 - Chests
