@@ -14,6 +14,13 @@ import java.sql.SQLException;
 
 public final class WiredVariableStore {
     private static final Logger LOGGER = LoggerFactory.getLogger(WiredVariableStore.class);
+    private static final Object[] ROOM_WRITE_LOCKS = new Object[256];
+
+    static {
+        for (int i = 0; i < ROOM_WRITE_LOCKS.length; i++) {
+            ROOM_WRITE_LOCKS[i] = new Object();
+        }
+    }
 
     public static final int OWNER_ROOM = 0;
     public static final int OWNER_USER = 1;
@@ -40,7 +47,7 @@ public final class WiredVariableStore {
             return StoredValue.empty();
         }
 
-        String query = "SELECT value, created_at, updated_at FROM wired_variables WHERE item_id = ? AND owner_type = ? AND owner_id = ? LIMIT 1";
+        String query = "SELECT value, created_at, updated_at, revision FROM wired_variables WHERE item_id = ? AND owner_type = ? AND owner_id = ? LIMIT 1";
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
              PreparedStatement statement = connection.prepareStatement(query)) {
@@ -50,7 +57,7 @@ public final class WiredVariableStore {
 
             try (ResultSet set = statement.executeQuery()) {
                 if (set.next()) {
-                    return new StoredValue(true, set.getLong("value"), set.getLong("created_at"), set.getLong("updated_at"));
+                    return new StoredValue(true, set.getLong("value"), set.getLong("created_at"), set.getLong("updated_at"), set.getLong("revision"));
                 }
             }
         } catch (SQLException e) {
@@ -83,53 +90,73 @@ public final class WiredVariableStore {
         return false;
     }
 
-    public static void saveValue(InteractionWiredVariable variable) {
-        saveValue(variable, OWNER_ROOM, 0, variable == null ? 0L : variable.getValue());
+    public static SaveResult saveValue(InteractionWiredVariable variable) {
+        return saveValue(variable, OWNER_ROOM, 0, variable == null ? 0L : variable.getValue());
     }
 
-    public static void saveValue(InteractionWiredVariable variable, int ownerType, int ownerId, long value) {
+    public static SaveResult saveValue(InteractionWiredVariable variable, int ownerType, int ownerId, long value) {
+        boolean existed = variable != null && hasValue(variable, ownerType, ownerId);
+        long currentRevision = variable == null ? 0L : variable.getRevision(ownerId);
+        return saveValue(variable, ownerType, ownerId, value, existed, currentRevision);
+    }
+
+    public static SaveResult saveValue(InteractionWiredVariable variable, int ownerType, int ownerId, long value,
+                                       boolean existed, long currentRevision) {
         if (variable == null) {
-            return;
+            return SaveResult.failed();
         }
 
         if (!variable.getPersistence().isPermanent() || variable.getVariableName().isEmpty()) {
             if (ownerType == OWNER_ROOM && ownerId == 0) {
                 deleteValues(variable);
             }
-            return;
+            return SaveResult.committed(currentRevision);
         }
 
-        if (!hasValue(variable, ownerType, ownerId) && isOwnerVariableLimitReached(variable, ownerType, ownerId)) {
-            logTooManyVariables(variable);
-            return;
+        synchronized (roomWriteLock(variable.getRoomId())) {
+            if (!existed && isAnyVariableLimitReached(variable, ownerType, ownerId)) {
+                logTooManyVariables(variable);
+                return SaveResult.capRejected();
+            }
+
+            long now = System.currentTimeMillis();
+            long createdAt = variable.getCreatedAtMs(ownerId) > 0L ? variable.getCreatedAtMs(ownerId) : now;
+            long updatedAt = variable.getUpdatedAtMs(ownerId) > 0L ? variable.getUpdatedAtMs(ownerId) : now;
+            long nextRevision = currentRevision == Long.MAX_VALUE ? 1L : Math.max(1L, currentRevision + 1L);
+
+            String query = "INSERT INTO wired_variables (item_id, room_id, variable_type, variable_name, persistence, owner_type, owner_id, value, created_at, updated_at, revision) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                    "ON DUPLICATE KEY UPDATE room_id = VALUES(room_id), variable_type = VALUES(variable_type), " +
+                    "variable_name = VALUES(variable_name), persistence = VALUES(persistence), value = VALUES(value), " +
+                    "created_at = IF(created_at > 0, created_at, VALUES(created_at)), updated_at = VALUES(updated_at), revision = VALUES(revision)";
+
+            try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
+                 PreparedStatement statement = connection.prepareStatement(query)) {
+                statement.setInt(1, variable.getId());
+                statement.setInt(2, variable.getRoomId());
+                statement.setInt(3, variable.getType().code);
+                statement.setString(4, variable.getVariableName());
+                statement.setInt(5, variable.getPersistence().code);
+                statement.setInt(6, ownerType);
+                statement.setInt(7, ownerId);
+                statement.setLong(8, value);
+                statement.setLong(9, createdAt);
+                statement.setLong(10, updatedAt);
+                statement.setLong(11, nextRevision);
+                statement.executeUpdate();
+                return SaveResult.committed(nextRevision);
+            } catch (SQLException e) {
+                LOGGER.error("Caught SQL exception", e);
+            }
         }
 
-        long now = System.currentTimeMillis();
-        long createdAt = variable.getCreatedAtMs(ownerId) > 0L ? variable.getCreatedAtMs(ownerId) : now;
-        long updatedAt = variable.getUpdatedAtMs(ownerId) > 0L ? variable.getUpdatedAtMs(ownerId) : now;
+        return SaveResult.failed();
+    }
 
-        String query = "INSERT INTO wired_variables (item_id, room_id, variable_type, variable_name, persistence, owner_type, owner_id, value, created_at, updated_at) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-                "ON DUPLICATE KEY UPDATE room_id = VALUES(room_id), variable_type = VALUES(variable_type), " +
-                "variable_name = VALUES(variable_name), persistence = VALUES(persistence), value = VALUES(value), " +
-                "created_at = IF(created_at > 0, created_at, VALUES(created_at)), updated_at = VALUES(updated_at)";
-
-        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
-             PreparedStatement statement = connection.prepareStatement(query)) {
-            statement.setInt(1, variable.getId());
-            statement.setInt(2, variable.getRoomId());
-            statement.setInt(3, variable.getType().code);
-            statement.setString(4, variable.getVariableName());
-            statement.setInt(5, variable.getPersistence().code);
-            statement.setInt(6, ownerType);
-            statement.setInt(7, ownerId);
-            statement.setLong(8, value);
-            statement.setLong(9, createdAt);
-            statement.setLong(10, updatedAt);
-            statement.execute();
-        } catch (SQLException e) {
-            LOGGER.error("Caught SQL exception", e);
-        }
+    private static boolean isAnyVariableLimitReached(InteractionWiredVariable variable, int ownerType, int ownerId) {
+        return isOwnerVariableLimitReached(variable, ownerType, ownerId)
+                || isDefinitionVariableLimitReached(variable)
+                || isRoomVariableLimitReached(variable);
     }
 
     private static boolean isOwnerVariableLimitReached(InteractionWiredVariable variable, int ownerType, int ownerId) {
@@ -154,6 +181,37 @@ public final class WiredVariableStore {
         }
 
         return false;
+    }
+
+    private static boolean isDefinitionVariableLimitReached(InteractionWiredVariable variable) {
+        int limit = Emulator.getConfig().getInt("hotel.room.variable.definition.max", 10000);
+        return limit >= 0 && countValues(
+                "SELECT COUNT(*) FROM wired_variables WHERE item_id = ?",
+                variable.getId()) >= limit;
+    }
+
+    private static boolean isRoomVariableLimitReached(InteractionWiredVariable variable) {
+        int limit = Emulator.getConfig().getInt("hotel.room.variable.total.max", 50000);
+        return limit >= 0 && countValues(
+                "SELECT COUNT(*) FROM wired_variables WHERE room_id = ?",
+                variable.getRoomId()) >= limit;
+    }
+
+    private static int countValues(String query, int value) {
+        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
+             PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setInt(1, value);
+            try (ResultSet set = statement.executeQuery()) {
+                return set.next() ? set.getInt(1) : 0;
+            }
+        } catch (SQLException e) {
+            LOGGER.error("Caught SQL exception", e);
+            return Integer.MAX_VALUE;
+        }
+    }
+
+    private static Object roomWriteLock(int roomId) {
+        return ROOM_WRITE_LOCKS[Math.floorMod(roomId, ROOM_WRITE_LOCKS.length)];
     }
 
     private static int getVariableLimit(int ownerType) {
@@ -205,9 +263,9 @@ public final class WiredVariableStore {
         }
     }
 
-    public static void deleteValue(InteractionWiredVariable variable, int ownerType, int ownerId) {
+    public static boolean deleteValue(InteractionWiredVariable variable, int ownerType, int ownerId) {
         if (variable == null) {
-            return;
+            return false;
         }
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
@@ -215,10 +273,12 @@ public final class WiredVariableStore {
             statement.setInt(1, variable.getId());
             statement.setInt(2, ownerType);
             statement.setInt(3, ownerId);
-            statement.execute();
+            statement.executeUpdate();
+            return true;
         } catch (SQLException e) {
             LOGGER.error("Caught SQL exception", e);
         }
+        return false;
     }
 
     public static class StoredValue {
@@ -226,16 +286,54 @@ public final class WiredVariableStore {
         public final long value;
         public final long createdAtMs;
         public final long updatedAtMs;
+        public final long revision;
 
-        StoredValue(boolean exists, long value, long createdAtMs, long updatedAtMs) {
+        StoredValue(boolean exists, long value, long createdAtMs, long updatedAtMs, long revision) {
             this.exists = exists;
             this.value = value;
             this.createdAtMs = createdAtMs;
             this.updatedAtMs = updatedAtMs;
+            this.revision = revision;
         }
 
         static StoredValue empty() {
-            return new StoredValue(false, 0L, 0L, 0L);
+            return new StoredValue(false, 0L, 0L, 0L, 0L);
+        }
+    }
+
+    public static final class SaveResult {
+        public enum Status {
+            COMMITTED,
+            CAP_REJECTED,
+            FAILED
+        }
+
+        public final Status status;
+        public final long revision;
+
+        private SaveResult(Status status, long revision) {
+            this.status = status;
+            this.revision = revision;
+        }
+
+        public boolean committed() {
+            return this.status == Status.COMMITTED;
+        }
+
+        static SaveResult committed(long revision) {
+            return new SaveResult(Status.COMMITTED, revision);
+        }
+
+        public static SaveResult inMemory(long revision) {
+            return committed(revision);
+        }
+
+        static SaveResult capRejected() {
+            return new SaveResult(Status.CAP_REJECTED, 0L);
+        }
+
+        static SaveResult failed() {
+            return new SaveResult(Status.FAILED, 0L);
         }
     }
 }

@@ -105,7 +105,12 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
         boolean existed = source.hasValue();
         long oldValue = existed ? source.getValue() : 0L;
         source.setValue(value);
-        this.fireVariableChanged(WiredVariableStore.OWNER_ROOM, 0, existed ? this.changeAction(oldValue, value) : VARIABLE_ACTION_CREATED, oldValue, value);
+        boolean existsNow = source.hasValue();
+        long newValue = existsNow ? source.getValue() : 0L;
+        if ((!existed && existsNow) || oldValue != newValue) {
+            this.fireVariableChanged(WiredVariableStore.OWNER_ROOM, 0,
+                    existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+        }
     }
 
     @Override
@@ -129,7 +134,12 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
         boolean existed = source.hasValue(ownerId);
         long oldValue = existed ? source.getValue(ownerId) : 0L;
         source.setValue(ownerId, value);
-        this.fireVariableChanged(WiredVariableStore.OWNER_USER, ownerId, existed ? this.changeAction(oldValue, value) : VARIABLE_ACTION_CREATED, oldValue, value);
+        boolean existsNow = source.hasValue(ownerId);
+        long newValue = existsNow ? source.getValue(ownerId) : 0L;
+        if ((!existed && existsNow) || oldValue != newValue) {
+            this.fireVariableChanged(WiredVariableStore.OWNER_USER, ownerId,
+                    existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+        }
     }
 
     @Override
@@ -150,7 +160,10 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
             long oldValue = existed ? source.getValue() : 0L;
             source.giveValue(ownerId, value, overrideExisting);
             long newValue = source.getValue();
-            this.fireVariableChanged(WiredVariableStore.OWNER_ROOM, 0, existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+            if ((!existed && source.hasValue()) || oldValue != newValue) {
+                this.fireVariableChanged(WiredVariableStore.OWNER_ROOM, 0,
+                        existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+            }
             return;
         }
 
@@ -158,7 +171,10 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
         long oldValue = existed ? source.getValue(ownerId) : 0L;
         source.giveValue(ownerId, value, overrideExisting);
         long newValue = source.getValue(ownerId);
-        this.fireVariableChanged(WiredVariableStore.OWNER_USER, ownerId, existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+        if ((!existed && source.hasValue(ownerId)) || oldValue != newValue) {
+            this.fireVariableChanged(WiredVariableStore.OWNER_USER, ownerId,
+                    existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+        }
     }
 
     @Override
@@ -171,13 +187,17 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
         if (source.getType() != WiredVariableType.USER) {
             long oldValue = source.getValue();
             source.removeValue(ownerId);
-            this.fireVariableChanged(WiredVariableStore.OWNER_ROOM, 0, VARIABLE_ACTION_DELETED, oldValue, 0L);
+            if (!source.hasValue()) {
+                this.fireVariableChanged(WiredVariableStore.OWNER_ROOM, 0, VARIABLE_ACTION_DELETED, oldValue, 0L);
+            }
             return;
         }
 
         long oldValue = source.getValue(ownerId);
         source.removeValue(ownerId);
-        this.fireVariableChanged(WiredVariableStore.OWNER_USER, ownerId, VARIABLE_ACTION_DELETED, oldValue, 0L);
+        if (!source.hasValue(ownerId)) {
+            this.fireVariableChanged(WiredVariableStore.OWNER_USER, ownerId, VARIABLE_ACTION_DELETED, oldValue, 0L);
+        }
     }
 
     @Override

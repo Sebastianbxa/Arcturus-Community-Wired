@@ -5,6 +5,9 @@ import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraCancelAn
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraAnimationTime;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraMovementCurve;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraMovementPhysics;
+import com.eu.habbo.habbohotel.items.interactions.wired.effects.WiredEffectChangeFurniDirection;
+import com.eu.habbo.habbohotel.items.interactions.wired.effects.WiredEffectMoveRotateFurni;
+import com.eu.habbo.habbohotel.items.interactions.wired.effects.WiredEffectRelativeFurniMovement;
 import com.eu.habbo.habbohotel.items.interactions.wired.triggers.WiredTriggerRepeaterShort;
 import com.eu.habbo.habbohotel.rooms.FurnitureMovementError;
 import com.eu.habbo.habbohotel.rooms.Room;
@@ -266,9 +269,35 @@ public final class WiredMovement {
         PendingFurniMutation mutation = getOrCreatePendingMutation(ctx, item);
         if (mutation == null || targetTile == null) return false;
 
-        mutation.x = targetTile.x;
-        mutation.y = targetTile.y;
-        mutation.rotation = Math.floorMod(rotation, 8);
+        int normalizedRotation = Math.floorMod(rotation, 8);
+        boolean accumulatesRepeatedMoves = ctx.activeEffect() instanceof WiredEffectMoveRotateFurni
+                || ctx.activeEffect() instanceof WiredEffectRelativeFurniMovement
+                || ctx.activeEffect() instanceof WiredEffectChangeFurniDirection;
+        boolean repeatedDestination = accumulatesRepeatedMoves
+                && mutation.lastRequestedX != null
+                && mutation.lastRequestedY != null
+                && mutation.lastRequestedRotation != null
+                && mutation.lastRequestedX == targetTile.x
+                && mutation.lastRequestedY == targetTile.y
+                && mutation.lastRequestedRotation == normalizedRotation;
+
+        if (repeatedDestination) {
+            mutation.x = (short) (mutation.x + (targetTile.x - item.getX()));
+            mutation.y = (short) (mutation.y + (targetTile.y - item.getY()));
+            if (item.getRotation() != normalizedRotation) {
+                int rotationDelta = Math.floorMod(normalizedRotation - item.getRotation(), 8);
+                mutation.rotation = Math.floorMod(
+                        (mutation.rotation == null ? item.getRotation() : mutation.rotation) + rotationDelta,
+                        8);
+            }
+        } else {
+            mutation.x = targetTile.x;
+            mutation.y = targetTile.y;
+            mutation.rotation = normalizedRotation;
+        }
+        mutation.lastRequestedX = targetTile.x;
+        mutation.lastRequestedY = targetTile.y;
+        mutation.lastRequestedRotation = normalizedRotation;
         mutation.options = options == null ? MoveOptions.slide() : options;
         mutation.explicitAltitude = explicitAltitude;
         return true;
@@ -910,6 +939,9 @@ public final class WiredMovement {
         private Double explicitAltitude;
         private Long state;
         private MoveOptions options;
+        private Short lastRequestedX;
+        private Short lastRequestedY;
+        private Integer lastRequestedRotation;
 
         private PendingFurniMutation(WiredContext ctx, HabboItem item) {
             this.ctx = ctx;

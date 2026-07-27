@@ -9,6 +9,7 @@ import com.eu.habbo.habbohotel.wired.WiredVariablePersistence;
 import com.eu.habbo.habbohotel.wired.WiredVariableType;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableStore;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableMutationReceipt;
 import com.eu.habbo.messages.ServerMessage;
 
 import java.sql.ResultSet;
@@ -22,6 +23,7 @@ public class WiredVariableFurni extends InteractionWiredVariable {
     private final ConcurrentHashMap<Integer, Long> itemValues = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, Long> itemCreatedAtMs = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, Long> itemUpdatedAtMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, Long> itemRevisions = new ConcurrentHashMap<>();
     private final Set<Integer> itemsWithValue = ConcurrentHashMap.newKeySet();
     private final Set<Integer> loadedPermanentItems = ConcurrentHashMap.newKeySet();
     private boolean hasValue;
@@ -53,6 +55,7 @@ public class WiredVariableFurni extends InteractionWiredVariable {
             this.itemValues.clear();
             this.itemCreatedAtMs.clear();
             this.itemUpdatedAtMs.clear();
+            this.itemRevisions.clear();
             this.itemsWithValue.clear();
             this.loadedPermanentItems.clear();
             WiredVariableStore.deleteValues(this);
@@ -77,39 +80,80 @@ public class WiredVariableFurni extends InteractionWiredVariable {
 
     @Override
     public void setValue(int itemId, long value) {
+        this.setValueWithReceipt(itemId, value);
+    }
+
+    @Override
+    public WiredVariableMutationReceipt setValueWithReceipt(int itemId, long value) {
         if (!this.hasValue || itemId <= 0 || this.getVariableName().isEmpty()) {
-            return;
+            return WiredVariableMutationReceipt.rejected(0L, value, this.getRevision(itemId));
         }
 
-        boolean existed = this.hasValue(itemId);
-        long oldValue = existed ? this.getValue(itemId) : 0L;
-        this.itemValues.put(itemId, value);
-        this.itemsWithValue.add(itemId);
-        this.markItemValueUpdated(itemId);
-        this.setLoadedValue(value);
+        final boolean existed;
+        final long oldValue;
+        final long committedRevision;
+        synchronized (this) {
+            existed = this.hasValue(itemId);
+            oldValue = existed ? this.itemValues.getOrDefault(itemId, 0L) : 0L;
+            long currentRevision = this.itemRevisions.getOrDefault(itemId, 0L);
+            if (existed && oldValue == value) {
+                return WiredVariableMutationReceipt.unchanged(value, currentRevision);
+            }
+            if (!existed && !this.canCreateLoadedValue()) {
+                return WiredVariableMutationReceipt.capRejected(oldValue, value, currentRevision);
+            }
 
-        if (this.getPersistence().isPermanent()) {
+            Long oldCreatedAt = this.itemCreatedAtMs.get(itemId);
+            Long oldUpdatedAt = this.itemUpdatedAtMs.get(itemId);
+            this.itemValues.put(itemId, value);
+            this.itemsWithValue.add(itemId);
+            this.markItemValueUpdated(itemId);
+
+            WiredVariableStore.SaveResult saveResult = this.getPersistence().isPermanent()
+                    ? WiredVariableStore.saveValue(this, WiredVariableStore.OWNER_ITEM, itemId, value, existed, currentRevision)
+                    : WiredVariableStore.SaveResult.inMemory(currentRevision);
+            if (!saveResult.committed()) {
+                if (existed) {
+                    this.itemValues.put(itemId, oldValue);
+                    restoreTimestamp(this.itemCreatedAtMs, itemId, oldCreatedAt);
+                    restoreTimestamp(this.itemUpdatedAtMs, itemId, oldUpdatedAt);
+                } else {
+                    this.itemValues.remove(itemId);
+                    this.itemsWithValue.remove(itemId);
+                    this.itemCreatedAtMs.remove(itemId);
+                    this.itemUpdatedAtMs.remove(itemId);
+                }
+                return saveResult.status == WiredVariableStore.SaveResult.Status.CAP_REJECTED
+                        ? WiredVariableMutationReceipt.capRejected(oldValue, value, currentRevision)
+                        : WiredVariableMutationReceipt.persistenceFailed(oldValue, value, currentRevision);
+            }
+
             this.loadedPermanentItems.add(itemId);
-            WiredVariableStore.saveValue(this, WiredVariableStore.OWNER_ITEM, itemId, value);
+            committedRevision = this.getPersistence().isPermanent()
+                    ? saveResult.revision
+                    : nextRevision(currentRevision);
+            this.itemRevisions.put(itemId, committedRevision);
         }
 
         WiredExtraTimeUtilities.applyForVariable(this, WiredVariableStore.OWNER_ITEM, itemId);
         WiredExtraLevelUpSystem.applyForVariable(this, WiredVariableStore.OWNER_ITEM, itemId);
         this.fireVariableChanged(WiredVariableStore.OWNER_ITEM, itemId, existed ? this.changeAction(oldValue, value) : VARIABLE_ACTION_CREATED, oldValue, value);
+        return WiredVariableMutationReceipt.committed(existed, oldValue, value, committedRevision);
     }
 
     @Override
-    public boolean hasValue(int itemId) {
+    public synchronized boolean hasValue(int itemId) {
         if (itemId <= 0 || this.getVariableName().isEmpty()) {
             return false;
         }
 
         if (this.getPersistence().isPermanent() && this.loadedPermanentItems.add(itemId)) {
-            if (WiredVariableStore.hasValue(this, WiredVariableStore.OWNER_ITEM, itemId)) {
-                WiredVariableStore.StoredValue storedValue = WiredVariableStore.loadStoredValue(this, WiredVariableStore.OWNER_ITEM, itemId);
+            WiredVariableStore.StoredValue storedValue = WiredVariableStore.loadStoredValue(this, WiredVariableStore.OWNER_ITEM, itemId);
+            if (storedValue.exists) {
                 this.itemsWithValue.add(itemId);
                 this.itemValues.put(itemId, storedValue.value);
                 this.markItemValueLoaded(itemId, storedValue.createdAtMs, storedValue.updatedAtMs);
+                this.itemRevisions.put(itemId, storedValue.revision);
             }
         }
 
@@ -122,26 +166,36 @@ public class WiredVariableFurni extends InteractionWiredVariable {
             return;
         }
 
-        if (!overrideExisting && this.hasValue(itemId)) {
+        if (this.hasValue) {
+            if (!overrideExisting && this.hasValue(itemId)) return;
+            this.setValueWithReceipt(itemId, value);
             return;
         }
 
-        boolean existed = this.hasValue(itemId);
-        long oldValue = existed ? this.getValue(itemId) : 0L;
-        long newValue = this.hasValue ? value : 0L;
-        this.itemValues.put(itemId, this.hasValue ? value : 0L);
-        this.itemsWithValue.add(itemId);
-        this.markItemValueUpdated(itemId);
-        this.setLoadedValue(newValue);
+        synchronized (this) {
+            if (this.hasValue(itemId) || !this.canCreateLoadedValue()) return;
 
-        if (this.getPersistence().isPermanent()) {
+            long currentRevision = this.itemRevisions.getOrDefault(itemId, 0L);
+            this.itemValues.put(itemId, 0L);
+            this.itemsWithValue.add(itemId);
+            this.markItemValueUpdated(itemId);
+            WiredVariableStore.SaveResult saveResult = this.getPersistence().isPermanent()
+                    ? WiredVariableStore.saveValue(this, WiredVariableStore.OWNER_ITEM, itemId, 0L, false, currentRevision)
+                    : WiredVariableStore.SaveResult.inMemory(currentRevision);
+            if (!saveResult.committed()) {
+                this.itemValues.remove(itemId);
+                this.itemsWithValue.remove(itemId);
+                this.itemCreatedAtMs.remove(itemId);
+                this.itemUpdatedAtMs.remove(itemId);
+                return;
+            }
             this.loadedPermanentItems.add(itemId);
-            WiredVariableStore.saveValue(this, WiredVariableStore.OWNER_ITEM, itemId, newValue);
+            this.itemRevisions.put(itemId, this.getPersistence().isPermanent() ? saveResult.revision : nextRevision(currentRevision));
         }
 
         WiredExtraTimeUtilities.applyForVariable(this, WiredVariableStore.OWNER_ITEM, itemId);
         WiredExtraLevelUpSystem.applyForVariable(this, WiredVariableStore.OWNER_ITEM, itemId);
-        this.fireVariableChanged(WiredVariableStore.OWNER_ITEM, itemId, existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+        this.fireVariableChanged(WiredVariableStore.OWNER_ITEM, itemId, VARIABLE_ACTION_CREATED, 0L, 0L);
     }
 
     @Override
@@ -150,21 +204,33 @@ public class WiredVariableFurni extends InteractionWiredVariable {
             return;
         }
 
-        boolean existed = this.hasValue(itemId);
-        long oldValue = existed ? this.getValue(itemId) : 0L;
-        this.itemValues.remove(itemId);
-        this.itemCreatedAtMs.remove(itemId);
-        this.itemUpdatedAtMs.remove(itemId);
-        this.itemsWithValue.remove(itemId);
-        this.loadedPermanentItems.remove(itemId);
+        long oldValue;
+        synchronized (this) {
+            if (!this.hasValue(itemId)) return;
 
-        if (this.getPersistence().isPermanent()) {
-            WiredVariableStore.deleteValue(this, WiredVariableStore.OWNER_ITEM, itemId);
+            oldValue = this.getValue(itemId);
+            Long oldCreatedAt = this.itemCreatedAtMs.get(itemId);
+            Long oldUpdatedAt = this.itemUpdatedAtMs.get(itemId);
+            long oldRevision = this.itemRevisions.getOrDefault(itemId, 0L);
+            this.itemValues.remove(itemId);
+            this.itemCreatedAtMs.remove(itemId);
+            this.itemUpdatedAtMs.remove(itemId);
+            this.itemsWithValue.remove(itemId);
+
+            if (this.getPersistence().isPermanent()
+                    && !WiredVariableStore.deleteValue(this, WiredVariableStore.OWNER_ITEM, itemId)) {
+                this.itemValues.put(itemId, oldValue);
+                this.itemsWithValue.add(itemId);
+                restoreTimestamp(this.itemCreatedAtMs, itemId, oldCreatedAt);
+                restoreTimestamp(this.itemUpdatedAtMs, itemId, oldUpdatedAt);
+                return;
+            }
+
+            this.loadedPermanentItems.add(itemId);
+            this.itemRevisions.put(itemId, nextRevision(oldRevision));
         }
 
-        if (existed) {
-            this.fireVariableChanged(WiredVariableStore.OWNER_ITEM, itemId, VARIABLE_ACTION_DELETED, oldValue, 0L);
-        }
+        this.fireVariableChanged(WiredVariableStore.OWNER_ITEM, itemId, VARIABLE_ACTION_DELETED, oldValue, 0L);
     }
 
     @Override
@@ -183,6 +249,7 @@ public class WiredVariableFurni extends InteractionWiredVariable {
         this.itemValues.clear();
         this.itemCreatedAtMs.clear();
         this.itemUpdatedAtMs.clear();
+        this.itemRevisions.clear();
         this.itemsWithValue.clear();
         this.loadedPermanentItems.clear();
 
@@ -219,6 +286,7 @@ public class WiredVariableFurni extends InteractionWiredVariable {
         this.itemValues.clear();
         this.itemCreatedAtMs.clear();
         this.itemUpdatedAtMs.clear();
+        this.itemRevisions.clear();
         this.itemsWithValue.clear();
         this.loadedPermanentItems.clear();
     }
@@ -231,6 +299,21 @@ public class WiredVariableFurni extends InteractionWiredVariable {
     @Override
     public long getUpdatedAtMs(int itemId) {
         return this.itemUpdatedAtMs.getOrDefault(itemId, 0L);
+    }
+
+    @Override
+    public long getRevision(int itemId) {
+        return this.itemRevisions.getOrDefault(itemId, 0L);
+    }
+
+    @Override
+    public int getLoadedValueCount() {
+        return this.itemsWithValue.size();
+    }
+
+    private static void restoreTimestamp(ConcurrentHashMap<Integer, Long> timestamps, int ownerId, Long value) {
+        if (value == null) timestamps.remove(ownerId);
+        else timestamps.put(ownerId, value);
     }
 
     private void markItemValueLoaded(int itemId, long createdAtMs, long updatedAtMs) {

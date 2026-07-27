@@ -13,6 +13,7 @@ import com.eu.habbo.habbohotel.wired.WiredVariablePersistence;
 import com.eu.habbo.habbohotel.wired.WiredVariableType;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableName;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableNumbers;
 import com.eu.habbo.messages.incoming.MessageHandler;
 import com.eu.habbo.messages.outgoing.generic.alerts.UpdateFailedComposer;
 import com.eu.habbo.messages.outgoing.wired.WiredSavedComposer;
@@ -133,9 +134,9 @@ public class WiredVariableSaveDataEvent extends MessageHandler {
         if (variable instanceof WiredVariableGlobal) {
             long value;
             try {
-                value = rawValue == null || rawValue.isEmpty() ? variable.getValue() : Long.parseLong(rawValue);
+                value = rawValue == null || rawValue.isEmpty() ? variable.getValue() : WiredVariableNumbers.parseWrappingLong(rawValue);
             } catch (NumberFormatException e) {
-                this.client.sendResponse(new UpdateFailedComposer("Variable value must be a 64-bit signed integer."));
+                this.client.sendResponse(new UpdateFailedComposer("Variable value must be an integer."));
                 return;
             }
 

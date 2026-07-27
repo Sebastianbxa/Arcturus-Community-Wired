@@ -68,7 +68,7 @@ public class WiredVariableGlobal extends InteractionWiredVariable {
                 if (this.getPersistence().isPermanent()) {
                     WiredVariableStore.StoredValue storedValue = WiredVariableStore.loadStoredValue(this);
                     if (storedValue.exists) {
-                        this.setLoadedValue(storedValue.value, storedValue.createdAtMs, storedValue.updatedAtMs);
+                        this.setLoadedValue(storedValue.value, storedValue.createdAtMs, storedValue.updatedAtMs, storedValue.revision);
                     }
                 }
             }

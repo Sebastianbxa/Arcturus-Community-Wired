@@ -271,6 +271,20 @@ public abstract class InteractionWiredEffect extends InteractionWired implements
         return WiredTriggerSourceResolver.resolveUsers(this, ctx.event(), this.userSource, selectedUsers);
     }
 
+    /**
+     * Empty selector results are valid no-op executions, but do not represent
+     * runtime work for usage accounting.
+     */
+    public boolean hasExecutionTargets(WiredContext ctx) {
+        if (this.furniSource == WiredSources.SOURCE_SELECTOR
+                && this.resolveSourceItems(ctx, null).isEmpty()) {
+            return false;
+        }
+
+        return this.userSource != WiredSources.SOURCE_SELECTOR
+                || !this.resolveSourceUsers(ctx, null).isEmpty();
+    }
+
     protected boolean hasClickedAvatarTrigger(Room room) {
         if (room == null || room.getRoomSpecialTypes() == null) {
             return false;

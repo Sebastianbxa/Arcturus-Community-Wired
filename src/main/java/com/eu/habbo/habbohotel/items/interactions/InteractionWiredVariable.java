@@ -12,6 +12,7 @@ import com.eu.habbo.habbohotel.wired.api.IWiredVariable;
 import com.eu.habbo.habbohotel.wired.core.WiredEvent;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableStore;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableMutationReceipt;
 import com.eu.habbo.Emulator;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.outgoing.wired.WiredVariableDataComposer;
@@ -35,9 +36,10 @@ public abstract class InteractionWiredVariable extends InteractionWired implemen
 
     private String variableName = "";
     private WiredVariablePersistence persistence = WiredVariablePersistence.ROOM_ACTIVE;
-    private long value;
-    private long createdAtMs;
-    private long updatedAtMs;
+    private volatile long value;
+    private volatile long createdAtMs;
+    private volatile long updatedAtMs;
+    private volatile long revision;
 
     protected InteractionWiredVariable(ResultSet set, Item baseItem) throws SQLException {
         super(set, baseItem);
@@ -102,18 +104,54 @@ public abstract class InteractionWiredVariable extends InteractionWired implemen
 
     @Override
     public void setValue(long value) {
-        boolean existed = this.createdAtMs > 0L;
-        long oldValue = this.value;
-        this.markValueUpdated();
-        this.value = value;
+        this.setValueWithReceipt(value);
+    }
 
-        if (this.persistence.isPermanent()) {
-            WiredVariableStore.saveValue(this);
+    public WiredVariableMutationReceipt setValueWithReceipt(long value) {
+        final boolean existed;
+        final long oldValue;
+        final long committedRevision;
+
+        synchronized (this) {
+            existed = this.createdAtMs > 0L;
+            oldValue = this.value;
+            if (existed && oldValue == value) {
+                return WiredVariableMutationReceipt.unchanged(value, this.revision);
+            }
+
+            long oldCreatedAtMs = this.createdAtMs;
+            long oldUpdatedAtMs = this.updatedAtMs;
+            this.markValueUpdated();
+            this.value = value;
+
+            WiredVariableStore.SaveResult saveResult = this.persistence.isPermanent()
+                    ? WiredVariableStore.saveValue(
+                            this,
+                            WiredVariableStore.OWNER_ROOM,
+                            0,
+                            value,
+                            existed,
+                            this.revision)
+                    : WiredVariableStore.SaveResult.inMemory(this.revision);
+            if (!saveResult.committed()) {
+                this.value = oldValue;
+                this.createdAtMs = oldCreatedAtMs;
+                this.updatedAtMs = oldUpdatedAtMs;
+                return saveResult.status == WiredVariableStore.SaveResult.Status.CAP_REJECTED
+                        ? WiredVariableMutationReceipt.capRejected(oldValue, value, this.revision)
+                        : WiredVariableMutationReceipt.persistenceFailed(oldValue, value, this.revision);
+            }
+
+            this.revision = this.persistence.isPermanent()
+                    ? saveResult.revision
+                    : nextRevision(this.revision);
+            committedRevision = this.revision;
         }
 
         WiredExtraTimeUtilities.applyForVariable(this, 0, 0);
         WiredExtraLevelUpSystem.applyForVariable(this, 0, 0);
         this.fireVariableChanged(0, 0, existed ? this.changeAction(oldValue, value) : VARIABLE_ACTION_CREATED, oldValue, value);
+        return WiredVariableMutationReceipt.committed(existed, oldValue, value, committedRevision);
     }
 
     public long getValue(int ownerId) {
@@ -122,6 +160,10 @@ public abstract class InteractionWiredVariable extends InteractionWired implemen
 
     public void setValue(int ownerId, long value) {
         this.setValue(value);
+    }
+
+    public WiredVariableMutationReceipt setValueWithReceipt(int ownerId, long value) {
+        return this.setValueWithReceipt(value);
     }
 
     public boolean hasValue(int ownerId) {
@@ -144,6 +186,14 @@ public abstract class InteractionWiredVariable extends InteractionWired implemen
         return this.getUpdatedAtMs();
     }
 
+    public long getRevision() {
+        return this.revision;
+    }
+
+    public long getRevision(int ownerId) {
+        return this.getRevision();
+    }
+
     public void giveValue(int ownerId, long value, boolean overrideExisting) {
         if (overrideExisting || !this.hasValue(ownerId)) {
             this.setValue(ownerId, value);
@@ -163,9 +213,37 @@ public abstract class InteractionWiredVariable extends InteractionWired implemen
     }
 
     public void removeRoomActiveValue(int ownerId) {
-        if (!this.persistence.isPermanent()) {
-            this.removeValue(ownerId);
+        // Only owner-scoped variable types should clear data when a user leaves.
+        // WiredVariableUser overrides this; global and furni definitions must not
+        // interpret a departing user id as their own owner id.
+    }
+
+    public void releaseOwnerCache(int ownerId) {
+        // Global variables have no owner-scoped cache.
+    }
+
+    public int getLoadedValueCount() {
+        return this.createdAtMs > 0L ? 1 : 0;
+    }
+
+    protected boolean canCreateLoadedValue() {
+        int definitionLimit = Emulator.getConfig().getInt("hotel.room.variable.definition.max", 10000);
+        if (definitionLimit >= 0 && this.getLoadedValueCount() >= definitionLimit) {
+            return false;
         }
+
+        int roomLimit = Emulator.getConfig().getInt("hotel.room.variable.total.max", 50000);
+        if (roomLimit < 0) return true;
+
+        Room room = Emulator.getGameEnvironment().getRoomManager().getRoom(this.getRoomId());
+        if (room == null || room.getRoomSpecialTypes() == null) return true;
+
+        long roomValues = 0L;
+        for (InteractionWiredVariable variable : room.getRoomSpecialTypes().getVariables()) {
+            roomValues += variable.getLoadedValueCount();
+            if (roomValues >= roomLimit) return false;
+        }
+        return true;
     }
 
     protected void setLoadedValue(long value) {
@@ -178,10 +256,15 @@ public abstract class InteractionWiredVariable extends InteractionWired implemen
     }
 
     protected void setLoadedValue(long value, long createdAtMs, long updatedAtMs) {
+        this.setLoadedValue(value, createdAtMs, updatedAtMs, this.revision);
+    }
+
+    protected void setLoadedValue(long value, long createdAtMs, long updatedAtMs, long revision) {
         long now = System.currentTimeMillis();
         this.value = value;
         this.createdAtMs = createdAtMs > 0L ? createdAtMs : now;
         this.updatedAtMs = updatedAtMs > 0L ? updatedAtMs : this.createdAtMs;
+        this.revision = Math.max(0L, revision);
     }
 
     protected void markValueUpdated() {
@@ -207,6 +290,10 @@ public abstract class InteractionWiredVariable extends InteractionWired implemen
         }
 
         return VARIABLE_ACTION_UNCHANGED;
+    }
+
+    protected static long nextRevision(long revision) {
+        return revision == Long.MAX_VALUE ? 1L : Math.max(1L, revision + 1L);
     }
 
     protected void fireVariableChanged(int ownerType, int ownerId, int action, long oldValue, long newValue) {

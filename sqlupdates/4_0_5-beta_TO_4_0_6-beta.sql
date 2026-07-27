@@ -35,3 +35,12 @@ INSERT INTO `emulator_texts` (`key`, `value`) VALUES
     ('wiredfurni.params.log_error', 'ERROR'),
     ('wiredfurni.params.log_debug', 'DEBUG')
 ON DUPLICATE KEY UPDATE `value` = `value`;
+
+ALTER TABLE `wired_variables`
+    ADD COLUMN IF NOT EXISTS `revision` bigint(20) NOT NULL DEFAULT 0 AFTER `updated_at`,
+    ADD INDEX IF NOT EXISTS `idx_wired_variables_room_owner` (`room_id`, `owner_type`, `owner_id`);
+
+INSERT INTO `emulator_settings` (`key`, `value`) VALUES
+    ('hotel.room.variable.definition.max', '10000'),
+    ('hotel.room.variable.total.max', '50000')
+ON DUPLICATE KEY UPDATE `value` = `value`;

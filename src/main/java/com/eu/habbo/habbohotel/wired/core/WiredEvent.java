@@ -176,8 +176,8 @@ public final class WiredEvent {
     private final long newVariableValue;
     private final int variableChangeOrigin;
     private final Map<Integer, String> itemStateSnapshots;
-    private final Map<Integer, List<HabboItem>> selectorItemCache = new ConcurrentHashMap<>();
-    private final Map<Integer, List<RoomUnit>> selectorUserCache = new ConcurrentHashMap<>();
+    private final Map<Long, List<HabboItem>> selectorItemCache = new ConcurrentHashMap<>();
+    private final Map<Long, List<RoomUnit>> selectorUserCache = new ConcurrentHashMap<>();
     private boolean hideChatMessage;
 
     private WiredEvent(Builder builder) {
@@ -389,22 +389,22 @@ public final class WiredEvent {
         this.hideChatMessage = true;
     }
 
-    List<HabboItem> getCachedSelectorItems(int wiredItemId) {
-        List<HabboItem> cachedItems = this.selectorItemCache.get(wiredItemId);
+    List<HabboItem> getCachedSelectorItems(long stackKey) {
+        List<HabboItem> cachedItems = this.selectorItemCache.get(stackKey);
         return cachedItems == null ? null : new ArrayList<>(cachedItems);
     }
 
-    void cacheSelectorItems(int wiredItemId, List<HabboItem> items) {
-        this.selectorItemCache.put(wiredItemId, Collections.unmodifiableList(new ArrayList<>(items)));
+    void cacheSelectorItems(long stackKey, List<HabboItem> items) {
+        this.selectorItemCache.put(stackKey, Collections.unmodifiableList(new ArrayList<>(items)));
     }
 
-    List<RoomUnit> getCachedSelectorUsers(int wiredItemId) {
-        List<RoomUnit> cachedUsers = this.selectorUserCache.get(wiredItemId);
+    List<RoomUnit> getCachedSelectorUsers(long stackKey) {
+        List<RoomUnit> cachedUsers = this.selectorUserCache.get(stackKey);
         return cachedUsers == null ? null : new ArrayList<>(cachedUsers);
     }
 
-    void cacheSelectorUsers(int wiredItemId, List<RoomUnit> users) {
-        this.selectorUserCache.put(wiredItemId, Collections.unmodifiableList(new ArrayList<>(users)));
+    void cacheSelectorUsers(long stackKey, List<RoomUnit> users) {
+        this.selectorUserCache.put(stackKey, Collections.unmodifiableList(new ArrayList<>(users)));
     }
 
     /**

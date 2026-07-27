@@ -5,6 +5,7 @@ import com.eu.habbo.habbohotel.items.interactions.InteractionWiredCondition;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredEffect;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredExtra;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredTrigger;
+import com.eu.habbo.habbohotel.items.interactions.InteractionWired;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraExecutionLimit;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraExecuteInOrder;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraChestFurniTypeScanner;
@@ -222,13 +223,20 @@ public final class WiredEngine {
 
         boolean anyTriggered = false;
         long currentTime = System.currentTimeMillis();
+        UUID eventRunId = UUID.randomUUID();
+        List<PreparedStack> preparedStacks = new ArrayList<>();
         room.beginComposerBatch();
         room.getTileManager().beginUpdateBatch();
         try {
             for (WiredStack stack : stacks) {
                 try {
-                    boolean triggered = processStack(stack, event, currentTime, createStackState(inheritedState));
-                    if (triggered) {
+                    PreparedStack prepared = prepareStack(
+                            stack,
+                            event,
+                            currentTime,
+                            createStackState(inheritedState, eventRunId));
+                    if (prepared != null) {
+                        preparedStacks.add(prepared);
                         anyTriggered = true;
                     }
                 } catch (WiredLimitException limitEx) {
@@ -236,6 +244,14 @@ public final class WiredEngine {
                 } catch (Exception ex) {
                     LOGGER.error("Error processing wired stack in room {}: {}", room.getId(), ex.getMessage(), ex);
                     debug(room, "Stack error: {}", ex.getMessage());
+                }
+            }
+
+            executePreparedEffects(preparedStacks, currentTime);
+
+            for (PreparedStack prepared : preparedStacks) {
+                if (prepared.fireExecutedEvent) {
+                    fireExecutedEvent(prepared.stack, event);
                 }
             }
         } finally {
@@ -249,30 +265,33 @@ public final class WiredEngine {
         return anyTriggered;
     }
 
-    private WiredState createStackState(WiredState inheritedState) {
-        return inheritedState == null ? new WiredState(maxStepsPerStack) : inheritedState.fork();
+    private WiredState createStackState(WiredState inheritedState, UUID eventRunId) {
+        return inheritedState == null
+                ? new WiredState(maxStepsPerStack, eventRunId)
+                : inheritedState.fork(eventRunId);
     }
 
     /**
-     * Process a single wired stack.
+     * Qualify a single stack without executing any effects. This guarantees that
+     * every condition for one wired event observes the same pre-effect room state.
      */
-    private boolean processStack(WiredStack stack, WiredEvent event, long currentTime, WiredState inheritedState) {
+    private PreparedStack prepareStack(WiredStack stack, WiredEvent event, long currentTime, WiredState inheritedState) {
         Room room = event.getRoom();
 
         // Check if trigger matches
         if (!stack.trigger().matches(stack.triggerItem(), event)) {
-            return false;
+            return null;
         }
 
         // Check if trigger requires actor
         if (stack.trigger().requiresActor() && !event.getActor().isPresent()) {
-            return false;
+            return null;
         }
 
         WiredExtraExecutionLimit executionLimit = stack.extra(WiredExtraExecutionLimit.class);
         if (executionLimit != null && !executionLimit.allowExecution(currentTime)) {
             debug(room, "Execution limit blocked stack at item {}", stack.triggerItem() != null ? stack.triggerItem().getId() : "null");
-            return false;
+            return null;
         }
 
         // Create execution context with stack reference
@@ -283,7 +302,7 @@ public final class WiredEngine {
         state.step();
 
         if (!captureVariableInputs(stack, ctx)) {
-            return false;
+            return null;
         }
 
         applyChestScanners(stack, ctx);
@@ -303,6 +322,16 @@ public final class WiredEngine {
         // Activate extras (for their animation)
         activateExtras(room, stack.triggerItem(), event.getActor().orElse(null), currentTime);
 
+        if (stack.triggerItem() instanceof InteractionWired) {
+            try {
+                WiredTriggerSourceResolver.preResolveSelectors((InteractionWired) stack.triggerItem(), event);
+            } catch (Exception selectorFailure) {
+                debug(room, "Selector resolution failed for stack at item {}: {}",
+                        stack.triggerItem().getId(), selectorFailure.getMessage());
+                return null;
+            }
+        }
+
         // Evaluate conditions
         WiredExtraOrEval conditionEvaluator = stack.extra(WiredExtraOrEval.class);
         boolean shouldEvaluateConditions = stack.hasConditions() || conditionEvaluator != null;
@@ -315,10 +344,13 @@ public final class WiredEngine {
                 if (stack.trigger().shouldHideChatMessage()) {
                     event.hideChatMessage();
                 }
-                if (hasEffects(stack, true) && !consumeStackActivation(room, stack, event)) {
-                    return false;
+                List<IWiredEffect> negativeEffects = selectEffects(stack, ctx, true);
+                if (hasRuntimeWork(negativeEffects, ctx) && !consumeStackActivation(room, stack, event)) {
+                    return null;
                 }
-                return executeEffects(stack, ctx, currentTime, true);
+                return negativeEffects.isEmpty()
+                        ? null
+                        : new PreparedStack(stack, ctx, negativeEffects, false);
             }
         } else {
             debug(room, "No conditions in stack, proceeding to effects");
@@ -327,27 +359,20 @@ public final class WiredEngine {
         // Fire plugin event (WiredStackTriggeredEvent)
         if (!fireTriggeredEvent(stack, event)) {
             debug(room, "Stack cancelled by plugin");
-            return false;
+            return null;
         }
 
         if (stack.trigger().shouldHideChatMessage()) {
             event.hideChatMessage();
         }
 
-        if (!consumeStackActivation(room, stack, event)) {
+        List<IWiredEffect> effects = selectEffects(stack, ctx, false);
+        if (hasRuntimeWork(effects, ctx) && !consumeStackActivation(room, stack, event)) {
             debug(room, "Usage cap blocked stack at item {}", stack.triggerItem() != null ? stack.triggerItem().getId() : "null");
-            return false;
+            return null;
         }
 
-        // Execute effects
-        if (stack.hasEffects()) {
-            executeEffects(stack, ctx, currentTime, false);
-        }
-
-        // Fire executed event
-        fireExecutedEvent(stack, event);
-
-        return true;
+        return new PreparedStack(stack, ctx, effects, true);
     }
 
     private boolean captureVariableInputs(WiredStack stack, WiredContext ctx) {
@@ -465,10 +490,7 @@ public final class WiredEngine {
         return true;
     }
 
-    /**
-     * Execute effects in a stack.
-     */
-    private boolean executeEffects(WiredStack stack, WiredContext ctx, long currentTime, boolean negativeOnly) {
+    private List<IWiredEffect> selectEffects(WiredStack stack, WiredContext ctx, boolean negativeOnly) {
         List<IWiredEffect> effects = new ArrayList<>();
         for (IWiredEffect effect : stack.effects()) {
             if (isNegativeEffect(effect) == negativeOnly) {
@@ -477,10 +499,9 @@ public final class WiredEngine {
         }
         
         if (effects.isEmpty()) {
-            return false;
+            return Collections.emptyList();
         }
 
-        // Determine which effects to execute
         List<IWiredEffect> toExecute;
         
         WiredExtraRandomEffect randomEffect = stack.extra(WiredExtraRandomEffect.class);
@@ -506,54 +527,96 @@ public final class WiredEngine {
             toExecute = Collections.singletonList(effects.get(index));
             debug(ctx.room(), "Unseen mode: selected effect {}/{}", index + 1, effects.size());
         } else {
-            // Normal mode: execute the stack in its resolved order. Random behavior is handled
-            // explicitly by random mode and random-effect extras.
             toExecute = new ArrayList<>(effects);
-            toExecute.sort(Comparator.comparingInt(effect -> isSignalEffect(effect) ? 1 : 0));
         }
 
-        // Execute selected effects
-        boolean executedAny = false;
-        WiredMovement.beginFurniMutationBatch(ctx);
-        try {
-            for (IWiredEffect effect : toExecute) {
-                // Check if effect requires actor
-                if (effect.requiresActor() && !ctx.hasActor()) {
-                    continue;
+        return toExecute;
+    }
+
+    /**
+     * Combine all qualified stacks into one event effect pool. Normal effects are
+     * randomized as individual jobs. Execute-in-order stacks remain contiguous,
+     * while signal effects are always deferred until the non-signal mutation batch
+     * has committed.
+     */
+    private void executePreparedEffects(List<PreparedStack> preparedStacks, long currentTime) {
+        if (preparedStacks == null || preparedStacks.isEmpty()) return;
+
+        List<List<EffectJob>> groups = new ArrayList<>();
+        for (PreparedStack prepared : preparedStacks) {
+            if (prepared.effects.isEmpty()) continue;
+
+            boolean executeInOrder = prepared.stack.extra(WiredExtraExecuteInOrder.class) != null
+                    && prepared.stack.extra(WiredExtraRandomEffect.class) == null
+                    && prepared.stack.extra(WiredExtraUnseenEffect.class) == null;
+
+            if (executeInOrder) {
+                List<EffectJob> orderedGroup = new ArrayList<>();
+                for (IWiredEffect effect : prepared.effects) {
+                    orderedGroup.add(new EffectJob(effect, prepared.ctx));
                 }
-
-                InteractionWiredEffect wiredEffect = effect instanceof InteractionWiredEffect
-                        ? (InteractionWiredEffect) effect
-                        : null;
-
-                // Handle delay
-                int delay = effect.getDelay();
-                if (delay > 0) {
-                    // Schedule delayed execution
-                    scheduleDelayedEffect(effect, ctx, delay, currentTime);
-                    executedAny = true;
-                } else {
-                    // Execute immediately
-                    ctx.state().step();
-                    try {
-                        effect.execute(ctx);
-                        executedAny = true;
-
-                        // Activate box animation after execution
-                        if (wiredEffect != null) {
-                            wiredEffect.setCooldown(currentTime);
-                            wiredEffect.activateBox(ctx.room(), ctx.actor().orElse(null), currentTime);
-                        }
-                    } catch (Exception e) {
-                        LOGGER.warn("Error executing effect: {}", e.getMessage());
-                    }
+                groups.add(orderedGroup);
+            } else {
+                for (IWiredEffect effect : prepared.effects) {
+                    groups.add(Collections.singletonList(new EffectJob(effect, prepared.ctx)));
                 }
             }
-        } finally {
-            WiredMovement.endFurniMutationBatch(ctx);
         }
 
-        return executedAny;
+        Collections.shuffle(groups);
+        List<EffectJob> regularJobs = new ArrayList<>();
+        List<EffectJob> signalJobs = new ArrayList<>();
+        for (List<EffectJob> group : groups) {
+            for (EffectJob job : group) {
+                (isSignalEffect(job.effect) ? signalJobs : regularJobs).add(job);
+            }
+        }
+
+        if (!regularJobs.isEmpty()) {
+            WiredContext batchContext = regularJobs.get(0).ctx;
+            WiredMovement.beginFurniMutationBatch(batchContext);
+            try {
+                for (EffectJob job : regularJobs) {
+                    executeEffectJob(job, currentTime);
+                }
+            } finally {
+                WiredMovement.endFurniMutationBatch(batchContext);
+            }
+        }
+
+        for (EffectJob job : signalJobs) {
+            executeEffectJob(job, currentTime);
+        }
+    }
+
+    private void executeEffectJob(EffectJob job, long currentTime) {
+        IWiredEffect effect = job.effect;
+        WiredContext ctx = job.ctx;
+        if (effect.requiresActor() && !ctx.hasActor()) return;
+
+        InteractionWiredEffect wiredEffect = effect instanceof InteractionWiredEffect
+                ? (InteractionWiredEffect) effect
+                : null;
+
+        int delay = effect.getDelay();
+        if (delay > 0) {
+            scheduleDelayedEffect(effect, ctx, delay, currentTime);
+            return;
+        }
+
+        try {
+            ctx.state().step();
+            ctx.setActiveEffect(effect);
+            effect.execute(ctx);
+            if (wiredEffect != null) {
+                wiredEffect.setCooldown(currentTime);
+                wiredEffect.activateBox(ctx.room(), ctx.actor().orElse(null), currentTime);
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Error executing effect: {}", e.getMessage());
+        } finally {
+            ctx.setActiveEffect(null);
+        }
     }
 
     private boolean isNegativeEffect(IWiredEffect effect) {
@@ -588,13 +651,15 @@ public final class WiredEngine {
                 || effect instanceof WiredEffectSendSignalNegative;
     }
 
-    private boolean hasEffects(WiredStack stack, boolean negativeOnly) {
-        for (IWiredEffect effect : stack.effects()) {
-            if (isNegativeEffect(effect) == negativeOnly) {
+    private boolean hasRuntimeWork(List<IWiredEffect> effects, WiredContext ctx) {
+        if (effects == null || effects.isEmpty()) return false;
+
+        for (IWiredEffect effect : effects) {
+            if (!(effect instanceof InteractionWiredEffect)
+                    || ((InteractionWiredEffect) effect).hasExecutionTargets(ctx)) {
                 return true;
             }
         }
-
         return false;
     }
 
@@ -639,7 +704,12 @@ public final class WiredEngine {
                 room.beginComposerBatch();
                 room.getTileManager().beginUpdateBatch();
                 try {
-                    effect.execute(delayedCtx);
+                    delayedCtx.setActiveEffect(effect);
+                    try {
+                        effect.execute(delayedCtx);
+                    } finally {
+                        delayedCtx.setActiveEffect(null);
+                    }
 
                     // Activate box animation after execution
                     if (effect instanceof InteractionWiredEffect) {
@@ -807,6 +877,30 @@ public final class WiredEngine {
      */
     public void clearRoomRecursionDepth(int roomId) {
         roomRecursionDepth.get().remove(roomId);
+    }
+
+    private static final class PreparedStack {
+        private final WiredStack stack;
+        private final WiredContext ctx;
+        private final List<IWiredEffect> effects;
+        private final boolean fireExecutedEvent;
+
+        private PreparedStack(WiredStack stack, WiredContext ctx, List<IWiredEffect> effects, boolean fireExecutedEvent) {
+            this.stack = stack;
+            this.ctx = ctx;
+            this.effects = effects == null ? Collections.emptyList() : effects;
+            this.fireExecutedEvent = fireExecutedEvent;
+        }
+    }
+
+    private static final class EffectJob {
+        private final IWiredEffect effect;
+        private final WiredContext ctx;
+
+        private EffectJob(IWiredEffect effect, WiredContext ctx) {
+            this.effect = effect;
+            this.ctx = ctx;
+        }
     }
     
     /**

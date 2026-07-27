@@ -457,6 +457,11 @@ public final class WiredProjectileVariables {
 
     private static void fireChanged(Room room, HabboItem projectile, RoomUnit actor, String name,
                                     int action, long oldValue, long newValue) {
+        if (oldValue == newValue && action != InteractionWiredVariable.VARIABLE_ACTION_CREATED
+                && action != InteractionWiredVariable.VARIABLE_ACTION_DELETED) {
+            return;
+        }
+
         WiredManager.handleEvent(WiredEvent.builder(WiredEvent.Type.VARIABLE_CHANGED, room)
                 .actor(actor)
                 .sourceItem(projectile)

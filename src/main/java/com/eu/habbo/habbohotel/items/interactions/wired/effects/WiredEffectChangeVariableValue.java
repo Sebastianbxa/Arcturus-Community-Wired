@@ -39,8 +39,10 @@ import com.eu.habbo.habbohotel.wired.core.WiredUserMovement;
 import com.eu.habbo.habbohotel.wired.core.WiredTriggerSourceResolver;
 import com.eu.habbo.habbohotel.wired.creator.WiredCreatorToolsRoomStats;
 import com.eu.habbo.habbohotel.wired.variables.WiredInternalVariableHelper;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableMutationReceipt;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableName;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableStore;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableNumbers;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.wired.WiredSaveException;
 import com.eu.habbo.messages.outgoing.rooms.users.RoomUnitOnRollerComposer;
@@ -120,7 +122,11 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
         this.referenceVariableType = this.normalizeVariableType(intParams[3]);
         this.destinationSource = this.normalizeSource(this.targetVariableType, intParams[4]);
         this.referenceSource = this.normalizeSource(this.referenceVariableType, intParams[5]);
-        this.referenceValue = data.referenceValue;
+        try {
+            this.referenceValue = parseReferenceValue(data);
+        } catch (NumberFormatException invalidValue) {
+            throw new WiredSaveException("Reference value must be an integer");
+        }
         this.targetVariableName = this.normalizeTargetVariableName(this.targetVariableType, data.targetVariable);
         this.referenceVariableName = this.normalizeReferenceVariableName(this.referenceVariableType, data.referenceVariable);
         this.loadSelectedItems(settings.getFurniIds());
@@ -177,7 +183,11 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
 
         this.targetVariableName = data.targetVariable == null ? "" : data.targetVariable;
         this.referenceVariableName = data.referenceVariable == null ? "" : data.referenceVariable;
-        this.referenceValue = data.referenceValue;
+        try {
+            this.referenceValue = parseReferenceValue(data);
+        } catch (NumberFormatException invalidValue) {
+            this.referenceValue = data.referenceValue;
+        }
         this.targetVariableType = this.normalizeVariableType(data.targetVariableType);
         this.operation = Operation.normalize(data.operation).code;
         this.referenceMode = data.referenceMode == REFERENCE_FROM_VARIABLE ? REFERENCE_FROM_VARIABLE : REFERENCE_SET_VALUE;
@@ -275,6 +285,23 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
     @Override
     public boolean requiresActor() {
         return this.requiresTriggeringUser();
+    }
+
+    @Override
+    public boolean hasExecutionTargets(WiredContext ctx) {
+        if (this.destinationSource != WiredSources.SOURCE_SELECTOR) {
+            return super.hasExecutionTargets(ctx);
+        }
+
+        if (this.targetVariableType == VARIABLE_TYPE_FURNI) {
+            return !this.resolveItems(ctx, this.destinationSource).isEmpty();
+        }
+
+        if (this.targetVariableType == VARIABLE_TYPE_USER) {
+            return !this.resolveUsers(ctx, this.destinationSource).isEmpty();
+        }
+
+        return true;
     }
 
     public boolean batchesFurniMutation() {
@@ -502,7 +529,14 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
         }
 
         long current = this.readValue(target, userId);
-        this.writeValue(target, userId, this.applyOperation(current, reference));
+        WiredVariableMutationReceipt receipt = this.writeValue(
+                target,
+                userId,
+                this.applyOperation(current, reference));
+        if (!receipt.committed()) {
+            return receipt.status == WiredVariableMutationReceipt.Status.UNCHANGED;
+        }
+
         target.needsUpdate(true);
         Emulator.getThreading().run(target);
         target.activateBox(room, roomUnit, System.currentTimeMillis());
@@ -544,7 +578,15 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
         }
 
         long current = this.readValue(target, userId, itemId);
-        this.writeValue(target, userId, itemId, this.applyOperation(current, reference));
+        WiredVariableMutationReceipt receipt = this.writeValue(
+                target,
+                userId,
+                itemId,
+                this.applyOperation(current, reference));
+        if (!receipt.committed()) {
+            return receipt.status == WiredVariableMutationReceipt.Status.UNCHANGED;
+        }
+
         target.needsUpdate(true);
         Emulator.getThreading().run(target);
         target.activateBox(room, roomUnit, System.currentTimeMillis());
@@ -576,22 +618,24 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
         return variable.getValue();
     }
 
-    private void writeValue(InteractionWiredVariable variable, int userId, long value) {
+    private WiredVariableMutationReceipt writeValue(InteractionWiredVariable variable, int userId, long value) {
         if (variable.getType() == WiredVariableType.USER) {
-            variable.setValue(userId, value);
-        } else {
-            variable.setValue(value);
+            return variable.setValueWithReceipt(userId, value);
         }
+
+        return variable.setValueWithReceipt(value);
     }
 
-    private void writeValue(InteractionWiredVariable variable, int userId, int itemId, long value) {
+    private WiredVariableMutationReceipt writeValue(InteractionWiredVariable variable, int userId, int itemId, long value) {
         if (variable.getType() == WiredVariableType.USER) {
-            variable.setValue(userId, value);
-        } else if (variable.getType() == WiredVariableType.FURNI) {
-            variable.setValue(itemId, value);
-        } else {
-            variable.setValue(value);
+            return variable.setValueWithReceipt(userId, value);
         }
+
+        if (variable.getType() == WiredVariableType.FURNI) {
+            return variable.setValueWithReceipt(itemId, value);
+        }
+
+        return variable.setValueWithReceipt(value);
     }
 
     private boolean canRead(InteractionWiredVariable variable, int userId, int itemId) {
@@ -842,11 +886,11 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
     }
 
     private void fireInternalVariableChanged(WiredContext ctx, RoomUnit actor, int ownerType, int ownerId, long oldValue, long newValue) {
-        if (ctx == null || ctx.room() == null) return;
+        if (ctx == null || ctx.room() == null || oldValue == newValue) return;
 
         int action = newValue > oldValue
                 ? InteractionWiredVariable.VARIABLE_ACTION_INCREASED
-                : (newValue < oldValue ? InteractionWiredVariable.VARIABLE_ACTION_DECREASED : InteractionWiredVariable.VARIABLE_ACTION_UNCHANGED);
+                : InteractionWiredVariable.VARIABLE_ACTION_DECREASED;
 
         WiredManager.handleEvent(WiredEvent.builder(WiredEvent.Type.VARIABLE_CHANGED, ctx.room())
                 .actor(actor)
@@ -855,6 +899,12 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
                 .variableChangeOrigin(InteractionWiredVariable.CHANGE_ORIGIN_IN_ROOM)
                 .triggeredByEffect(true)
                 .build());
+    }
+
+    private static long parseReferenceValue(JsonData data) {
+        return data.referenceValueText == null
+                ? data.referenceValue
+                : WiredVariableNumbers.parseWrappingLong(data.referenceValueText);
     }
 
     private Long resolveReferenceValue(WiredContext ctx, RoomUnit roomUnit, int userId, int itemId) {
@@ -1242,7 +1292,7 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
             case DIVIDE:
                 return reference == 0L ? current : current / reference;
             case POWER:
-                return (long) Math.pow(current, reference);
+                return reference < 0L ? (long) Math.pow(current, reference) : wrappingPow(current, reference);
             case MODULO:
                 return reference == 0L ? current : current % reference;
             case MIN:
@@ -1271,6 +1321,22 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
             default:
                 return reference;
         }
+    }
+
+    private static long wrappingPow(long base, long exponent) {
+        long result = 1L;
+        long factor = base;
+        long remaining = exponent;
+        while (remaining != 0L) {
+            if ((remaining & 1L) != 0L) {
+                result *= factor;
+            }
+            remaining >>>= 1;
+            if (remaining != 0L) {
+                factor *= factor;
+            }
+        }
+        return result;
     }
 
     enum Operation {
@@ -1314,6 +1380,7 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
         String targetVariable = "";
         String referenceVariable = "";
         long referenceValue = 0L;
+        String referenceValueText;
         List<String> globalVariables = new ArrayList<>();
         List<String> globalValueVariables = new ArrayList<>();
         List<String> furniVariables = new ArrayList<>();
@@ -1339,6 +1406,7 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
             this.targetVariable = targetVariable;
             this.referenceVariable = referenceVariable;
             this.referenceValue = referenceValue;
+            this.referenceValueText = Long.toString(referenceValue);
             if (globalVariables != null) this.globalVariables = globalVariables;
             if (globalValueVariables != null) this.globalValueVariables = globalValueVariables;
             if (furniVariables != null) this.furniVariables = furniVariables;

@@ -9,6 +9,7 @@ import com.eu.habbo.habbohotel.wired.WiredVariablePersistence;
 import com.eu.habbo.habbohotel.wired.WiredVariableType;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableStore;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableMutationReceipt;
 import com.eu.habbo.messages.ServerMessage;
 
 import java.sql.ResultSet;
@@ -22,6 +23,7 @@ public class WiredVariableUser extends InteractionWiredVariable {
     private final ConcurrentHashMap<Integer, Long> userValues = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, Long> userCreatedAtMs = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, Long> userUpdatedAtMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, Long> userRevisions = new ConcurrentHashMap<>();
     private final Set<Integer> usersWithValue = ConcurrentHashMap.newKeySet();
     private final Set<Integer> loadedPermanentUsers = ConcurrentHashMap.newKeySet();
     private boolean hasValue;
@@ -52,6 +54,7 @@ public class WiredVariableUser extends InteractionWiredVariable {
             this.userValues.clear();
             this.userCreatedAtMs.clear();
             this.userUpdatedAtMs.clear();
+            this.userRevisions.clear();
             this.usersWithValue.clear();
             this.loadedPermanentUsers.clear();
             WiredVariableStore.deleteValues(this);
@@ -76,39 +79,80 @@ public class WiredVariableUser extends InteractionWiredVariable {
 
     @Override
     public void setValue(int userId, long value) {
+        this.setValueWithReceipt(userId, value);
+    }
+
+    @Override
+    public WiredVariableMutationReceipt setValueWithReceipt(int userId, long value) {
         if (!this.hasValue || userId <= 0 || this.getVariableName().isEmpty()) {
-            return;
+            return WiredVariableMutationReceipt.rejected(0L, value, this.getRevision(userId));
         }
 
-        boolean existed = this.hasValue(userId);
-        long oldValue = existed ? this.getValue(userId) : 0L;
-        this.userValues.put(userId, value);
-        this.usersWithValue.add(userId);
-        this.markUserValueUpdated(userId);
-        this.setLoadedValue(value);
+        final boolean existed;
+        final long oldValue;
+        final long committedRevision;
+        synchronized (this) {
+            existed = this.hasValue(userId);
+            oldValue = existed ? this.userValues.getOrDefault(userId, 0L) : 0L;
+            long currentRevision = this.userRevisions.getOrDefault(userId, 0L);
+            if (existed && oldValue == value) {
+                return WiredVariableMutationReceipt.unchanged(value, currentRevision);
+            }
+            if (!existed && !this.canCreateLoadedValue()) {
+                return WiredVariableMutationReceipt.capRejected(oldValue, value, currentRevision);
+            }
 
-        if (this.getPersistence().isPermanent()) {
+            Long oldCreatedAt = this.userCreatedAtMs.get(userId);
+            Long oldUpdatedAt = this.userUpdatedAtMs.get(userId);
+            this.userValues.put(userId, value);
+            this.usersWithValue.add(userId);
+            this.markUserValueUpdated(userId);
+
+            WiredVariableStore.SaveResult saveResult = this.getPersistence().isPermanent()
+                    ? WiredVariableStore.saveValue(this, WiredVariableStore.OWNER_USER, userId, value, existed, currentRevision)
+                    : WiredVariableStore.SaveResult.inMemory(currentRevision);
+            if (!saveResult.committed()) {
+                if (existed) {
+                    this.userValues.put(userId, oldValue);
+                    restoreTimestamp(this.userCreatedAtMs, userId, oldCreatedAt);
+                    restoreTimestamp(this.userUpdatedAtMs, userId, oldUpdatedAt);
+                } else {
+                    this.userValues.remove(userId);
+                    this.usersWithValue.remove(userId);
+                    this.userCreatedAtMs.remove(userId);
+                    this.userUpdatedAtMs.remove(userId);
+                }
+                return saveResult.status == WiredVariableStore.SaveResult.Status.CAP_REJECTED
+                        ? WiredVariableMutationReceipt.capRejected(oldValue, value, currentRevision)
+                        : WiredVariableMutationReceipt.persistenceFailed(oldValue, value, currentRevision);
+            }
+
             this.loadedPermanentUsers.add(userId);
-            WiredVariableStore.saveValue(this, WiredVariableStore.OWNER_USER, userId, value);
+            committedRevision = this.getPersistence().isPermanent()
+                    ? saveResult.revision
+                    : nextRevision(currentRevision);
+            this.userRevisions.put(userId, committedRevision);
         }
 
         WiredExtraTimeUtilities.applyForVariable(this, WiredVariableStore.OWNER_USER, userId);
         WiredExtraLevelUpSystem.applyForVariable(this, WiredVariableStore.OWNER_USER, userId);
         this.fireVariableChanged(WiredVariableStore.OWNER_USER, userId, existed ? this.changeAction(oldValue, value) : VARIABLE_ACTION_CREATED, oldValue, value);
+        return WiredVariableMutationReceipt.committed(existed, oldValue, value, committedRevision);
     }
 
     @Override
-    public boolean hasValue(int userId) {
+    public synchronized boolean hasValue(int userId) {
         if (userId <= 0 || this.getVariableName().isEmpty()) {
             return false;
         }
 
         if (this.getPersistence().isPermanent() && this.loadedPermanentUsers.add(userId)) {
-            if (WiredVariableStore.hasValue(this, WiredVariableStore.OWNER_USER, userId)) {
-                WiredVariableStore.StoredValue storedValue = WiredVariableStore.loadStoredValue(this, WiredVariableStore.OWNER_USER, userId);
+            WiredVariableStore.StoredValue storedValue = WiredVariableStore.loadStoredValue(this, WiredVariableStore.OWNER_USER, userId);
+            if (storedValue.exists) {
                 this.usersWithValue.add(userId);
                 this.userValues.put(userId, storedValue.value);
                 this.markUserValueLoaded(userId, storedValue.createdAtMs, storedValue.updatedAtMs);
+                this.userRevisions.put(userId, storedValue.revision);
             }
         }
 
@@ -121,26 +165,36 @@ public class WiredVariableUser extends InteractionWiredVariable {
             return;
         }
 
-        if (!overrideExisting && this.hasValue(userId)) {
+        if (this.hasValue) {
+            if (!overrideExisting && this.hasValue(userId)) return;
+            this.setValueWithReceipt(userId, value);
             return;
         }
 
-        boolean existed = this.hasValue(userId);
-        long oldValue = existed ? this.getValue(userId) : 0L;
-        long newValue = this.hasValue ? value : 0L;
-        this.userValues.put(userId, this.hasValue ? value : 0L);
-        this.usersWithValue.add(userId);
-        this.markUserValueUpdated(userId);
-        this.setLoadedValue(newValue);
+        synchronized (this) {
+            if (this.hasValue(userId) || !this.canCreateLoadedValue()) return;
 
-        if (this.getPersistence().isPermanent()) {
+            long currentRevision = this.userRevisions.getOrDefault(userId, 0L);
+            this.userValues.put(userId, 0L);
+            this.usersWithValue.add(userId);
+            this.markUserValueUpdated(userId);
+            WiredVariableStore.SaveResult saveResult = this.getPersistence().isPermanent()
+                    ? WiredVariableStore.saveValue(this, WiredVariableStore.OWNER_USER, userId, 0L, false, currentRevision)
+                    : WiredVariableStore.SaveResult.inMemory(currentRevision);
+            if (!saveResult.committed()) {
+                this.userValues.remove(userId);
+                this.usersWithValue.remove(userId);
+                this.userCreatedAtMs.remove(userId);
+                this.userUpdatedAtMs.remove(userId);
+                return;
+            }
             this.loadedPermanentUsers.add(userId);
-            WiredVariableStore.saveValue(this, WiredVariableStore.OWNER_USER, userId, newValue);
+            this.userRevisions.put(userId, this.getPersistence().isPermanent() ? saveResult.revision : nextRevision(currentRevision));
         }
 
         WiredExtraTimeUtilities.applyForVariable(this, WiredVariableStore.OWNER_USER, userId);
         WiredExtraLevelUpSystem.applyForVariable(this, WiredVariableStore.OWNER_USER, userId);
-        this.fireVariableChanged(WiredVariableStore.OWNER_USER, userId, existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+        this.fireVariableChanged(WiredVariableStore.OWNER_USER, userId, VARIABLE_ACTION_CREATED, 0L, 0L);
     }
 
     @Override
@@ -149,21 +203,33 @@ public class WiredVariableUser extends InteractionWiredVariable {
             return;
         }
 
-        boolean existed = this.hasValue(userId);
-        long oldValue = existed ? this.getValue(userId) : 0L;
-        this.userValues.remove(userId);
-        this.userCreatedAtMs.remove(userId);
-        this.userUpdatedAtMs.remove(userId);
-        this.usersWithValue.remove(userId);
-        this.loadedPermanentUsers.remove(userId);
+        long oldValue;
+        synchronized (this) {
+            if (!this.hasValue(userId)) return;
 
-        if (this.getPersistence().isPermanent()) {
-            WiredVariableStore.deleteValue(this, WiredVariableStore.OWNER_USER, userId);
+            oldValue = this.getValue(userId);
+            Long oldCreatedAt = this.userCreatedAtMs.get(userId);
+            Long oldUpdatedAt = this.userUpdatedAtMs.get(userId);
+            long oldRevision = this.userRevisions.getOrDefault(userId, 0L);
+            this.userValues.remove(userId);
+            this.userCreatedAtMs.remove(userId);
+            this.userUpdatedAtMs.remove(userId);
+            this.usersWithValue.remove(userId);
+
+            if (this.getPersistence().isPermanent()
+                    && !WiredVariableStore.deleteValue(this, WiredVariableStore.OWNER_USER, userId)) {
+                this.userValues.put(userId, oldValue);
+                this.usersWithValue.add(userId);
+                restoreTimestamp(this.userCreatedAtMs, userId, oldCreatedAt);
+                restoreTimestamp(this.userUpdatedAtMs, userId, oldUpdatedAt);
+                return;
+            }
+
+            this.loadedPermanentUsers.add(userId);
+            this.userRevisions.put(userId, nextRevision(oldRevision));
         }
 
-        if (existed) {
-            this.fireVariableChanged(WiredVariableStore.OWNER_USER, userId, VARIABLE_ACTION_DELETED, oldValue, 0L);
-        }
+        this.fireVariableChanged(WiredVariableStore.OWNER_USER, userId, VARIABLE_ACTION_DELETED, oldValue, 0L);
     }
 
     @Override
@@ -171,6 +237,22 @@ public class WiredVariableUser extends InteractionWiredVariable {
         if (!this.getPersistence().isPermanent()) {
             this.removeValue(userId);
         }
+    }
+
+    @Override
+    public synchronized void releaseOwnerCache(int userId) {
+        if (!this.getPersistence().isPermanent() || userId <= 0) return;
+        this.userValues.remove(userId);
+        this.userCreatedAtMs.remove(userId);
+        this.userUpdatedAtMs.remove(userId);
+        this.userRevisions.remove(userId);
+        this.usersWithValue.remove(userId);
+        this.loadedPermanentUsers.remove(userId);
+    }
+
+    @Override
+    public int getLoadedValueCount() {
+        return this.usersWithValue.size();
     }
 
     @Override
@@ -189,6 +271,7 @@ public class WiredVariableUser extends InteractionWiredVariable {
         this.userValues.clear();
         this.userCreatedAtMs.clear();
         this.userUpdatedAtMs.clear();
+        this.userRevisions.clear();
         this.usersWithValue.clear();
         this.loadedPermanentUsers.clear();
 
@@ -225,6 +308,7 @@ public class WiredVariableUser extends InteractionWiredVariable {
         this.userValues.clear();
         this.userCreatedAtMs.clear();
         this.userUpdatedAtMs.clear();
+        this.userRevisions.clear();
         this.usersWithValue.clear();
         this.loadedPermanentUsers.clear();
     }
@@ -237,6 +321,16 @@ public class WiredVariableUser extends InteractionWiredVariable {
     @Override
     public long getUpdatedAtMs(int userId) {
         return this.userUpdatedAtMs.getOrDefault(userId, 0L);
+    }
+
+    @Override
+    public long getRevision(int userId) {
+        return this.userRevisions.getOrDefault(userId, 0L);
+    }
+
+    private static void restoreTimestamp(ConcurrentHashMap<Integer, Long> timestamps, int ownerId, Long value) {
+        if (value == null) timestamps.remove(ownerId);
+        else timestamps.put(ownerId, value);
     }
 
     private void markUserValueLoaded(int userId, long createdAtMs, long updatedAtMs) {

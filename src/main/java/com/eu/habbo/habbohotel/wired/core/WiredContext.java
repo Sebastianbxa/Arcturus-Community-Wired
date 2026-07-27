@@ -5,6 +5,7 @@ import com.eu.habbo.habbohotel.rooms.RoomTile;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
 import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.habbohotel.wired.api.WiredStack;
+import com.eu.habbo.habbohotel.wired.api.IWiredEffect;
 
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -52,6 +53,7 @@ public final class WiredContext {
     private final WiredState state;
     private final WiredTargets targets;
     private final ConcurrentHashMap<Object, Object> executionCache = new ConcurrentHashMap<>();
+    private IWiredEffect activeEffect;
     
     /** The wired trigger furniture item executing this stack */
     private final HabboItem triggerItem;
@@ -246,6 +248,14 @@ public final class WiredContext {
      */
     public WiredState state() {
         return state;
+    }
+
+    public IWiredEffect activeEffect() {
+        return this.activeEffect;
+    }
+
+    void setActiveEffect(IWiredEffect activeEffect) {
+        this.activeEffect = activeEffect;
     }
 
     /**

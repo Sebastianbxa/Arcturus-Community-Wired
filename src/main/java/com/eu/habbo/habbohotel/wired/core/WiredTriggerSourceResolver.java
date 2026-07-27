@@ -25,6 +25,12 @@ public final class WiredTriggerSourceResolver {
 
     private WiredTriggerSourceResolver() {}
 
+    public static void preResolveSelectors(InteractionWired stackItem, WiredEvent event) {
+        if (stackItem == null || event == null) return;
+        resolveItems(stackItem, event, WiredSources.SOURCE_SELECTOR, Collections.emptyList());
+        resolveUsers(stackItem, event, WiredSources.SOURCE_SELECTOR, Collections.emptyList());
+    }
+
     public static List<HabboItem> resolveItems(InteractionWired wiredItem,
                                                WiredEvent event,
                                                int furniSource,
@@ -45,7 +51,7 @@ public final class WiredTriggerSourceResolver {
                 return new ArrayList<>(event.getSignalItems());
 
             case WiredSources.SOURCE_SELECTOR:
-                List<HabboItem> cachedSelectorItems = event.getCachedSelectorItems(wiredItem.getId());
+                List<HabboItem> cachedSelectorItems = event.getCachedSelectorItems(selectorStackKey(wiredItem));
                 if (cachedSelectorItems != null) {
                     return cachedSelectorItems;
                 }
@@ -167,7 +173,7 @@ public final class WiredTriggerSourceResolver {
                 return new ArrayList<>(event.getSignalUsers());
 
             case WiredSources.SOURCE_SELECTOR:
-                List<RoomUnit> cachedSelectorUsers = event.getCachedSelectorUsers(wiredItem.getId());
+                List<RoomUnit> cachedSelectorUsers = event.getCachedSelectorUsers(selectorStackKey(wiredItem));
                 if (cachedSelectorUsers != null) {
                     return cachedSelectorUsers;
                 }
@@ -259,12 +265,19 @@ public final class WiredTriggerSourceResolver {
     }
 
     private static List<HabboItem> cacheSelectorItems(WiredEvent event, InteractionWired wiredItem, List<HabboItem> items) {
-        event.cacheSelectorItems(wiredItem.getId(), items);
+        event.cacheSelectorItems(selectorStackKey(wiredItem), items);
         return new ArrayList<>(items);
     }
 
     private static List<RoomUnit> cacheSelectorUsers(WiredEvent event, InteractionWired wiredItem, List<RoomUnit> users) {
-        event.cacheSelectorUsers(wiredItem.getId(), users);
+        event.cacheSelectorUsers(selectorStackKey(wiredItem), users);
         return new ArrayList<>(users);
+    }
+
+    private static long selectorStackKey(InteractionWired wiredItem) {
+        if (wiredItem == null) return 0L;
+        return ((long) wiredItem.getRoomId() << 32)
+                ^ (((long) wiredItem.getX() & 0xFFFFL) << 16)
+                ^ ((long) wiredItem.getY() & 0xFFFFL);
     }
 }

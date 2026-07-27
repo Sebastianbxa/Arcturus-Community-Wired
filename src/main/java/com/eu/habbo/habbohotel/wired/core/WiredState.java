@@ -51,7 +51,11 @@ public final class WiredState {
      * @param maxSteps maximum number of steps allowed (triggers, conditions, effects)
      */
     public WiredState(int maxSteps) {
-        this.runId = UUID.randomUUID();
+        this(maxSteps, UUID.randomUUID());
+    }
+
+    WiredState(int maxSteps, UUID runId) {
+        this.runId = runId == null ? UUID.randomUUID() : runId;
         this.maxSteps = maxSteps;
         this.startTimeMs = System.currentTimeMillis();
     }
@@ -317,7 +321,11 @@ public final class WiredState {
     }
 
     public WiredState fork() {
-        WiredState forked = new WiredState(this.maxSteps);
+        return this.fork(UUID.randomUUID());
+    }
+
+    WiredState fork(UUID sharedRunId) {
+        WiredState forked = new WiredState(this.maxSteps, sharedRunId);
         forked.setContextScope(this.contextScopeKey);
         forked.importScopedContextValues(this.scopedContextValuesSnapshot(), true);
         return forked;
