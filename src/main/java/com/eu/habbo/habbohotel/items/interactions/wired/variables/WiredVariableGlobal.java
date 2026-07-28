@@ -6,6 +6,7 @@ import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.wired.WiredVariablePersistence;
 import com.eu.habbo.habbohotel.wired.WiredVariableType;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableMutationReceipt;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableStore;
 
 import java.sql.ResultSet;
@@ -25,6 +26,36 @@ public class WiredVariableGlobal extends InteractionWiredVariable {
     @Override
     public WiredVariableType getType() {
         return type;
+    }
+
+    @Override
+    public WiredVariableMutationReceipt setValueWithReceipt(long value) {
+        WiredVariableMutationReceipt receipt = super.setValueWithReceipt(value);
+        if (receipt.committed() && this.getPersistence() == WiredVariablePersistence.SHARED_PERMANENT) {
+            int action = receipt.status == WiredVariableMutationReceipt.Status.CREATED
+                    ? VARIABLE_ACTION_CREATED
+                    : this.changeAction(receipt.oldValue, receipt.newValue);
+            WiredVariableFromAnotherRoom.broadcastGlobalChangeFromSource(
+                    this,
+                    action,
+                    receipt.oldValue,
+                    receipt.newValue);
+        }
+        return receipt;
+    }
+
+    @Override
+    public void removeValue(int ownerId) {
+        long oldValue = this.getValue();
+        boolean shared = this.getPersistence() == WiredVariablePersistence.SHARED_PERMANENT;
+        super.removeValue(ownerId);
+        if (shared) {
+            WiredVariableFromAnotherRoom.broadcastGlobalChangeFromSource(
+                    this,
+                    VARIABLE_ACTION_DELETED,
+                    oldValue,
+                    0L);
+        }
     }
 
     public void configure(String variableName, WiredVariablePersistence persistence, long value) {

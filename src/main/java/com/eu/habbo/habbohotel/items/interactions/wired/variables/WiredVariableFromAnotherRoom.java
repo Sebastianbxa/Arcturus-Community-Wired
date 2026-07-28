@@ -142,7 +142,7 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
                 0,
                 value);
         this.refreshLoadedSource(definition, 0);
-        this.fireCommittedChange(WiredVariableStore.OWNER_ROOM, 0, receipt);
+        this.broadcastGlobalChange(definition, receipt);
         return receipt;
     }
 
@@ -233,7 +233,7 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
                         0,
                         value);
                 this.refreshLoadedSource(definition, 0);
-                this.fireCommittedChange(WiredVariableStore.OWNER_ROOM, 0, receipt);
+                this.broadcastGlobalChange(definition, receipt);
             }
             return;
         }
@@ -269,8 +269,23 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
         }
 
         if (definition.type == WiredVariableType.GLOBAL) {
-            WiredVariableStore.setSharedValue(definition.variable, WiredVariableStore.OWNER_ROOM, 0, 0L);
+            WiredVariableMutationReceipt receipt = WiredVariableStore.setSharedValue(
+                    definition.variable,
+                    WiredVariableStore.OWNER_ROOM,
+                    0,
+                    0L);
             this.refreshLoadedSource(definition, 0);
+            if (receipt.committed()) {
+                notifyLoadedGlobalConsumers(
+                        this.ownerId,
+                        definition.variable.roomId,
+                        definition.variable.itemId,
+                        definition.variable.variableName,
+                        VARIABLE_ACTION_DELETED,
+                        receipt.oldValue,
+                        0L,
+                        true);
+            }
             return;
         }
 
@@ -497,6 +512,101 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
                 ownerType,
                 storedOwnerId);
         source.refreshSharedValue(storedOwnerId, storedValue);
+    }
+
+    private void broadcastGlobalChange(SourceDefinition definition, WiredVariableMutationReceipt receipt) {
+        if (definition == null || definition.type != WiredVariableType.GLOBAL ||
+                receipt == null || !receipt.committed()) {
+            return;
+        }
+
+        int action = receipt.status == WiredVariableMutationReceipt.Status.CREATED
+                ? VARIABLE_ACTION_CREATED
+                : this.changeAction(receipt.oldValue, receipt.newValue);
+        notifyLoadedGlobalConsumers(
+                this.ownerId,
+                definition.variable.roomId,
+                definition.variable.itemId,
+                definition.variable.variableName,
+                action,
+                receipt.oldValue,
+                receipt.newValue,
+                true);
+    }
+
+    public static void broadcastGlobalChangeFromSource(InteractionWiredVariable source, int action,
+                                                       long oldValue, long newValue) {
+        if (source == null || source.getType() != WiredVariableType.GLOBAL ||
+                source.getPersistence() != WiredVariablePersistence.SHARED_PERMANENT) {
+            return;
+        }
+
+        Room sourceRoom = Emulator.getGameEnvironment().getRoomManager().getRoom(source.getRoomId());
+        if (sourceRoom == null || !sourceRoom.isLoaded()) {
+            return;
+        }
+
+        notifyLoadedGlobalConsumers(
+                sourceRoom.getOwnerId(),
+                source.getRoomId(),
+                source.getId(),
+                source.getVariableName(),
+                action,
+                oldValue,
+                newValue,
+                false);
+    }
+
+    private static void notifyLoadedGlobalConsumers(int ownerId, int sourceRoomId, int sourceItemId,
+                                                    String sourceVariableName, int action,
+                                                    long oldValue, long newValue, boolean notifySourceRoom) {
+        String normalizedName = WiredVariableName.normalize(sourceVariableName);
+        if (ownerId <= 0 || sourceRoomId <= 0 || sourceItemId <= 0 || normalizedName.isEmpty()) {
+            return;
+        }
+
+        for (Room room : Emulator.getGameEnvironment().getRoomManager().getActiveRooms(-1)) {
+            if (room == null || !room.isLoaded() || room.getRoomSpecialTypes() == null) {
+                continue;
+            }
+
+            if (room.getId() == sourceRoomId) {
+                if (notifySourceRoom) {
+                    InteractionWiredVariable source = room.getRoomSpecialTypes().getVariable(
+                            WiredVariableType.GLOBAL,
+                            normalizedName);
+                    if (source != null && source.getId() == sourceItemId &&
+                            source.getPersistence() == WiredVariablePersistence.SHARED_PERMANENT) {
+                        source.notifyChangedFromAnotherRoom(
+                                WiredVariableStore.OWNER_ROOM,
+                                0,
+                                action,
+                                oldValue,
+                                newValue);
+                    }
+                }
+                continue;
+            }
+
+            for (InteractionWiredVariable variable : room.getRoomSpecialTypes().getVariables(WiredVariableType.GLOBAL)) {
+                if (!(variable instanceof WiredVariableFromAnotherRoom)) {
+                    continue;
+                }
+
+                WiredVariableFromAnotherRoom reference = (WiredVariableFromAnotherRoom) variable;
+                if (reference.ownerId == ownerId &&
+                        reference.sourceRoomId == sourceRoomId &&
+                        reference.getSourceVariableType() == WiredVariableType.GLOBAL &&
+                        reference.sourceVariableName.equals(normalizedName)) {
+                    reference.notifyChangedFromAnotherRoom(
+                            WiredVariableStore.OWNER_ROOM,
+                            0,
+                            action,
+                            oldValue,
+                            newValue);
+                }
+            }
+        }
     }
 
     public static void invalidateSourceDefinition(int roomId, WiredVariableType type, String variableName) {

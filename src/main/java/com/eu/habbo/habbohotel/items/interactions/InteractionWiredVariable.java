@@ -240,6 +240,11 @@ public abstract class InteractionWiredVariable extends InteractionWired implemen
         }
     }
 
+    public void notifyChangedFromAnotherRoom(int ownerType, int ownerId, int action, long oldValue, long newValue) {
+        withChangeOrigin(CHANGE_ORIGIN_ANOTHER_ROOM,
+                () -> this.fireVariableChanged(ownerType, ownerId, action, oldValue, newValue));
+    }
+
     public int getLoadedValueCount() {
         return this.createdAtMs > 0L ? 1 : 0;
     }
