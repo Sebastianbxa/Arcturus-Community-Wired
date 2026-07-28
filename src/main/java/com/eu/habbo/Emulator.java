@@ -5,6 +5,7 @@ import com.eu.habbo.core.*;
 import com.eu.habbo.core.consolecommands.ConsoleCommand;
 import com.eu.habbo.database.Database;
 import com.eu.habbo.habbohotel.GameEnvironment;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableStore;
 import com.eu.habbo.networking.camera.CameraClient;
 import com.eu.habbo.networking.gameserver.GameServer;
 import com.eu.habbo.networking.rconserver.RCONServer;
@@ -275,6 +276,12 @@ public final class Emulator {
             if (Emulator.gameServer != null)
                 Emulator.gameServer.stop();
         } catch (Exception e) {
+        }
+
+        try {
+            WiredVariableStore.shutdown();
+        } catch (Exception e) {
+            LOGGER.error("Failed to flush wired variable values during shutdown", e);
         }
 
         LOGGER.info("Stopped Arcturus Morningstar {}", version);

@@ -48,6 +48,7 @@ import com.eu.habbo.habbohotel.users.DanceType;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.habbohotel.wired.core.WiredMouseHoldManager;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableStore;
 import com.eu.habbo.messages.ISerialize;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.outgoing.guilds.GuildInfoComposer;
@@ -1018,6 +1019,14 @@ public class Room implements Comparable<Room>, ISerialize, Runnable {
       if (this.loaded) {
         // Set loaded to false FIRST to prevent re-entry and ensure cycle stops
         this.loaded = false;
+
+        // Persist the latest coalesced variable values before discarding the
+        // room-local variable objects. Failed writes remain dirty centrally.
+        try {
+          WiredVariableStore.flushRoom(this.id);
+        } catch (Exception e) {
+          LOGGER.error("Failed to flush wired variable values while unloading room {}", this.id, e);
+        }
         
         try {
           if (this.traxManager != null && !this.traxManager.disposed()) {

@@ -8,6 +8,7 @@ import com.eu.habbo.habbohotel.messenger.Messenger;
 import com.eu.habbo.habbohotel.pets.Pet;
 import com.eu.habbo.habbohotel.rooms.*;
 import com.eu.habbo.habbohotel.users.inventory.BadgesComponent;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableStore;
 import com.eu.habbo.messages.outgoing.generic.alerts.*;
 import com.eu.habbo.messages.outgoing.inventory.*;
 import com.eu.habbo.messages.outgoing.rooms.FloodCounterComposer;
@@ -183,6 +184,12 @@ public class Habbo implements Runnable {
             }
         } catch (Exception e) {
             LOGGER.error("Caught exception", e);
+        }
+
+        try {
+            WiredVariableStore.flushOwner(WiredVariableStore.OWNER_USER, this.getHabboInfo().getId());
+        } catch (Exception e) {
+            LOGGER.error("Failed to flush wired variable values for user {}", this.getHabboInfo().getId(), e);
         }
 
         try {

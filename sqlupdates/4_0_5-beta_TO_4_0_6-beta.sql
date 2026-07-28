@@ -42,5 +42,8 @@ ALTER TABLE `wired_variables`
 
 INSERT INTO `emulator_settings` (`key`, `value`) VALUES
     ('hotel.room.variable.definition.max', '10000'),
-    ('hotel.room.variable.total.max', '50000')
+    ('hotel.room.variable.total.max', '50000'),
+    ('hotel.room.variable.flush.interval.ms', '2000'),
+    ('hotel.room.variable.flush.batch.size', '500'),
+    ('hotel.room.variable.flush.retry.max.ms', '30000')
 ON DUPLICATE KEY UPDATE `value` = `value`;
