@@ -6,6 +6,7 @@ import com.eu.habbo.habbohotel.games.GameState;
 import com.eu.habbo.habbohotel.games.GameTeam;
 import com.eu.habbo.habbohotel.games.GameTeamColors;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredVariable;
+import com.eu.habbo.habbohotel.items.interactions.InteractionTeleport;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraLevelUpSystem;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraTimeUtilities;
 import com.eu.habbo.habbohotel.items.interactions.wired.utils.WiredTeamScoreHelper;
@@ -97,7 +98,7 @@ public class WiredCreatorToolsVariableActionEvent extends MessageHandler {
             return;
         }
 
-        if (ACTION_SET.equals(action) && variableName.startsWith("@")) {
+        if (ACTION_SET.equals(action) && (variableName.startsWith("@") || variableName.startsWith("~"))) {
             return;
         }
 
@@ -227,6 +228,10 @@ public class WiredCreatorToolsVariableActionEvent extends MessageHandler {
         if ("@altitude".equals(variableName)) {
             WiredMovement.moveFurniAltitude(room, item, value / 100D);
             return true;
+        }
+
+        if (InteractionTeleport.TARGET_ID_VARIABLE.equals(variableName) && item instanceof InteractionTeleport) {
+            return ((InteractionTeleport) item).writeWiredTargetId(room, value);
         }
 
         int x = item.getX();

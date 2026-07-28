@@ -66,7 +66,8 @@ public class WiredEffectTeleportToRoom extends InteractionWiredEffect {
         message.appendInt(this.getBaseItem().getSpriteId());
         message.appendInt(this.getId());
         message.appendString("");
-        message.appendInt(1);
+        message.appendInt(2);
+        message.appendInt(this.getFurniSource());
         message.appendInt(this.getUserSource());
         message.appendInt(0);
         message.appendInt(this.getType().code);
@@ -110,7 +111,8 @@ public class WiredEffectTeleportToRoom extends InteractionWiredEffect {
 
         this.items.clear();
         this.items.addAll(newItems);
-        this.saveUserSource(settings, 0);
+        this.saveFurniSource(settings, 0);
+        this.saveUserSource(settings, 1);
         this.setDelay(delay);
 
         return true;
@@ -126,11 +128,15 @@ public class WiredEffectTeleportToRoom extends InteractionWiredEffect {
 
         this.validateRoomLinkers();
 
-        if (this.items.isEmpty()) {
+        List<HabboItem> linkers = this.resolveSourceItems(ctx, this.items).stream()
+                .filter(WiredEffectTeleportToRoom::isRoomLinker)
+                .collect(Collectors.toList());
+
+        if (linkers.isEmpty()) {
             return;
         }
 
-        HabboItem linker = this.items.get(Emulator.getRandom().nextInt(this.items.size()));
+        HabboItem linker = linkers.get(Emulator.getRandom().nextInt(linkers.size()));
         TeleportTarget target = findLinkedTarget(linker.getId());
 
         if (target == null) {

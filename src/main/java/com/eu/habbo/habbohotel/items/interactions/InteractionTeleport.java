@@ -18,6 +18,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class InteractionTeleport extends HabboItem {
+    public static final String TARGET_ID_VARIABLE = "~teleport.target_id";
+
     private int targetId;
     private int targetRoomId;
     private int roomUnitID = -1;
@@ -175,6 +177,43 @@ public class InteractionTeleport extends HabboItem {
 
     public void setTargetId(int targetId) {
         this.targetId = targetId;
+    }
+
+    public int readWiredTargetId() {
+        return Emulator.getGameEnvironment().getItemManager().getTeleportPairItemId(this.getId());
+    }
+
+    public boolean writeWiredTargetId(Room room, long targetId) {
+        if (room == null
+                || this.getRoomId() != room.getId()
+                || targetId <= 0L
+                || targetId > Integer.MAX_VALUE
+                || targetId == this.getId()) {
+            return false;
+        }
+
+        HabboItem targetItem = room.getHabboItem((int) targetId);
+        if (!(targetItem instanceof InteractionTeleport) || targetItem.getRoomId() != room.getId()) {
+            return false;
+        }
+
+        int previousTargetId = this.readWiredTargetId();
+        if (!Emulator.getGameEnvironment().getItemManager().replaceTeleportPair(this.getId(), (int) targetId)) {
+            return false;
+        }
+
+        if (previousTargetId > 0 && previousTargetId != targetId) {
+            HabboItem previousTargetItem = room.getHabboItem(previousTargetId);
+            if (previousTargetItem instanceof InteractionTeleport
+                    && ((InteractionTeleport) previousTargetItem).getTargetId() == this.getId()) {
+                ((InteractionTeleport) previousTargetItem).setTargetId(0);
+                ((InteractionTeleport) previousTargetItem).setTargetRoomId(0);
+            }
+        }
+
+        this.setTargetId((int) targetId);
+        this.setTargetRoomId(room.getId());
+        return true;
     }
 
     public int getTargetRoomId() {

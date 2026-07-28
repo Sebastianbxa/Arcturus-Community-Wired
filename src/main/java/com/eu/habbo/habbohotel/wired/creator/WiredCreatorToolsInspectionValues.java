@@ -8,6 +8,7 @@ import com.eu.habbo.habbohotel.items.chests.ChestManager;
 import com.eu.habbo.habbohotel.items.chests.ChestSettings;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredVariable;
 import com.eu.habbo.habbohotel.items.interactions.InteractionAreaHide;
+import com.eu.habbo.habbohotel.items.interactions.InteractionTeleport;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraLevelUpSystem;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraTimeUtilities;
 import com.eu.habbo.habbohotel.games.GamePlayer;
@@ -101,6 +102,10 @@ public class WiredCreatorToolsInspectionValues {
         values.put("@dimensions.y", String.valueOf(baseItem.getLength()));
         values.put("@owner_id", String.valueOf(item.getUserId()));
         WiredProjectileVariables.appendValues(room, item, values);
+
+        if (item instanceof InteractionTeleport) {
+            values.put(InteractionTeleport.TARGET_ID_VARIABLE, String.valueOf(((InteractionTeleport) item).readWiredTargetId()));
+        }
 
         if (room.isHideInvisibleFurni() && Room.INVISIBLE_ITEM_NAMES.contains(baseItem.getName())) {
             values.put("@is_invisible", " ");

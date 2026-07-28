@@ -849,6 +849,45 @@ public class ItemManager {
         return 0;
     }
 
+    public boolean replaceTeleportPair(int sourceItemId, int targetItemId) {
+        if (sourceItemId <= 0 || targetItemId <= 0 || sourceItemId == targetItemId) {
+            return false;
+        }
+
+        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection()) {
+            boolean originalAutoCommit = connection.getAutoCommit();
+            connection.setAutoCommit(false);
+
+            try (PreparedStatement deleteStatement = connection.prepareStatement(
+                    "DELETE FROM items_teleports WHERE teleport_one_id = ? OR teleport_two_id = ?");
+                 PreparedStatement insertStatement = connection.prepareStatement(
+                         "INSERT INTO items_teleports (teleport_one_id, teleport_two_id) VALUES (?, ?)")) {
+                deleteStatement.setInt(1, sourceItemId);
+                deleteStatement.setInt(2, sourceItemId);
+                deleteStatement.executeUpdate();
+
+                insertStatement.setInt(1, sourceItemId);
+                insertStatement.setInt(2, targetItemId);
+                insertStatement.executeUpdate();
+
+                connection.commit();
+                connection.setAutoCommit(originalAutoCommit);
+                return true;
+            } catch (SQLException e) {
+                connection.rollback();
+                LOGGER.error("Could not replace teleport target {} -> {}", sourceItemId, targetItemId, e);
+                return false;
+            } finally {
+                if (!connection.getAutoCommit()) {
+                    connection.setAutoCommit(originalAutoCommit);
+                }
+            }
+        } catch (SQLException e) {
+            LOGGER.error("Could not replace teleport target {} -> {}", sourceItemId, targetItemId, e);
+            return false;
+        }
+    }
+
     public void deleteTeleportPair(int itemId) {
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection(); PreparedStatement statement = connection.prepareStatement("DELETE FROM items_teleports WHERE teleport_one_id = ? OR teleport_two_id = ?")) {
             statement.setInt(1, itemId);

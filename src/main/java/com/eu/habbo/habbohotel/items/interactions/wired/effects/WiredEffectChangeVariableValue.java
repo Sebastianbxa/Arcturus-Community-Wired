@@ -12,7 +12,9 @@ import com.eu.habbo.habbohotel.items.interactions.InteractionAreaHide;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredEffect;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredTrigger;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredVariable;
+import com.eu.habbo.habbohotel.items.interactions.InteractionTeleport;
 import com.eu.habbo.habbohotel.items.interactions.games.InteractionGameTimer;
+import com.eu.habbo.habbohotel.items.interactions.games.football.scoreboards.InteractionFootballScoreboard;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraLevelUpSystem;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraTimeUtilities;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettings;
@@ -1008,6 +1010,9 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
             return pending == null ? Math.round(item.getZ() * 100D) : pending;
         }
         if ("@wallitem_offset".equals(variableName)) return this.parseLong(item.getWallPosition());
+        if (InteractionTeleport.TARGET_ID_VARIABLE.equals(variableName) && item instanceof InteractionTeleport) {
+            return (long) ((InteractionTeleport) item).readWiredTargetId();
+        }
         if (item instanceof InteractionAreaHide && variableName != null && variableName.startsWith(InteractionAreaHide.ROOT_VARIABLE)) {
             return ((InteractionAreaHide) item).readInternalValue(variableName);
         }
@@ -1019,6 +1024,12 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
         if (room == null) return false;
 
         if ("@state".equals(variableName)) {
+            if (item instanceof InteractionFootballScoreboard) {
+                int score = value > 99L ? 0 : (value < 0L ? 99 : (int) value);
+                ((InteractionFootballScoreboard) item).setScore(score);
+                return true;
+            }
+
             int stateCount = item.getBaseItem() == null ? 0 : item.getBaseItem().getStateCount();
             if (stateCount <= 1 && !(item instanceof InteractionGameTimer)) {
                 // Static furniture has no alternative visual state. Treat writes as a
@@ -1075,6 +1086,9 @@ public class WiredEffectChangeVariableValue extends InteractionWiredEffect {
             return true;
         }
         else if ("@wallitem_offset".equals(variableName)) item.setWallPosition(String.valueOf(value));
+        else if (InteractionTeleport.TARGET_ID_VARIABLE.equals(variableName) && item instanceof InteractionTeleport) {
+            return ((InteractionTeleport) item).writeWiredTargetId(room, value);
+        }
         else if (item instanceof InteractionAreaHide && variableName != null && variableName.startsWith(InteractionAreaHide.ROOT_VARIABLE)) {
             return ((InteractionAreaHide) item).writeInternalValue(room, variableName, value);
         }

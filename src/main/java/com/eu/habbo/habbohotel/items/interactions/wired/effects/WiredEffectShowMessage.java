@@ -75,7 +75,7 @@ public class WiredEffectShowMessage extends InteractionWiredEffect {
         int[] intParams = settings.getIntParams();
 
         if(gameClient.getHabbo() == null || !gameClient.getHabbo().hasPermission(Permission.ACC_SUPERWIRED)) {
-            message = Emulator.getGameEnvironment().getWordFilter().filter(message, null);
+            message = WiredMessageFormatter.filterPreservingPlaceholders(message);
         }
 
         message = WiredMessageFormatter.limitVisibleLength(message);
