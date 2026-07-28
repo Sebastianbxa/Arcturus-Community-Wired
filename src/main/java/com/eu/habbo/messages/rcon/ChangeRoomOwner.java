@@ -1,6 +1,7 @@
 package com.eu.habbo.messages.rcon;
 
 import com.eu.habbo.Emulator;
+import com.eu.habbo.habbohotel.items.interactions.wired.variables.WiredVariableFromAnotherRoom;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.google.gson.Gson;
 
@@ -14,6 +15,7 @@ public class ChangeRoomOwner extends RCONMessage<ChangeRoomOwner.JSON> {
         Room room = Emulator.getGameEnvironment().getRoomManager().loadRoom(json.room_id);
 
         if (room != null) {
+            WiredVariableFromAnotherRoom.invalidateSourceDefinitions(room.getId());
             room.setOwnerId(json.user_id);
             room.setOwnerName(json.username);
             room.setNeedsUpdate(true);

@@ -251,6 +251,31 @@ public class WiredVariableUser extends InteractionWiredVariable {
     }
 
     @Override
+    public synchronized void refreshSharedValue(int userId, WiredVariableStore.StoredValue storedValue) {
+        if (this.getPersistence() != WiredVariablePersistence.SHARED_PERMANENT || userId <= 0 || storedValue == null) {
+            return;
+        }
+
+        this.loadedPermanentUsers.add(userId);
+        if (storedValue.exists) {
+            long now = System.currentTimeMillis();
+            long createdAt = storedValue.createdAtMs > 0L ? storedValue.createdAtMs : now;
+            long updatedAt = storedValue.updatedAtMs > 0L ? storedValue.updatedAtMs : createdAt;
+            this.usersWithValue.add(userId);
+            this.userValues.put(userId, storedValue.value);
+            this.userCreatedAtMs.put(userId, createdAt);
+            this.userUpdatedAtMs.put(userId, updatedAt);
+            this.userRevisions.put(userId, storedValue.revision);
+        } else {
+            this.usersWithValue.remove(userId);
+            this.userValues.remove(userId);
+            this.userCreatedAtMs.remove(userId);
+            this.userUpdatedAtMs.remove(userId);
+            this.userRevisions.remove(userId);
+        }
+    }
+
+    @Override
     public int getLoadedValueCount() {
         return this.usersWithValue.size();
     }
@@ -304,6 +329,7 @@ public class WiredVariableUser extends InteractionWiredVariable {
 
     @Override
     public void onPickUp() {
+        WiredVariableFromAnotherRoom.invalidateSourceDefinition(this.getRoomId(), this.getType(), this.getVariableName());
         super.onPickUp();
         this.userValues.clear();
         this.userCreatedAtMs.clear();

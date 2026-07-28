@@ -3,6 +3,7 @@ package com.eu.habbo.habbohotel.wired.variables;
 import com.eu.habbo.Emulator;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredVariable;
 import com.eu.habbo.habbohotel.rooms.Room;
+import com.eu.habbo.habbohotel.wired.WiredVariablePersistence;
 import com.eu.habbo.habbohotel.wired.creator.WiredCreatorToolsLogManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,11 +48,19 @@ public final class WiredVariableStore {
             return StoredValue.empty();
         }
 
+        return loadStoredValue(variable.getId(), ownerType, ownerId);
+    }
+
+    public static StoredValue loadStoredValue(int itemId, int ownerType, int ownerId) {
+        if (itemId <= 0) {
+            return StoredValue.empty();
+        }
+
         String query = "SELECT value, created_at, updated_at, revision FROM wired_variables WHERE item_id = ? AND owner_type = ? AND owner_id = ? LIMIT 1";
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
              PreparedStatement statement = connection.prepareStatement(query)) {
-            statement.setInt(1, variable.getId());
+            statement.setInt(1, itemId);
             statement.setInt(2, ownerType);
             statement.setInt(3, ownerId);
 
@@ -65,6 +74,83 @@ public final class WiredVariableStore {
         }
 
         return StoredValue.empty();
+    }
+
+    public static StoredValue loadStoredValue(VariableDefinition variable, int ownerType, int ownerId) {
+        return variable == null ? StoredValue.empty() : loadStoredValue(variable.itemId, ownerType, ownerId);
+    }
+
+    public static WiredVariableMutationReceipt setSharedValue(VariableDefinition variable, int ownerType, int ownerId, long value) {
+        if (variable == null || !variable.persistence.isPermanent() || variable.variableName.isEmpty()) {
+            return WiredVariableMutationReceipt.rejected(0L, value, 0L);
+        }
+
+        synchronized (roomWriteLock(variable.roomId)) {
+            StoredValue storedValue = loadStoredValue(variable.itemId, ownerType, ownerId);
+            long oldValue = storedValue.exists ? storedValue.value : 0L;
+            if (storedValue.exists && oldValue == value) {
+                return WiredVariableMutationReceipt.unchanged(value, storedValue.revision);
+            }
+
+            if (!storedValue.exists && isAnyVariableLimitReached(variable.itemId, variable.roomId, ownerType, ownerId)) {
+                logTooManyVariables(variable.roomId);
+                return WiredVariableMutationReceipt.capRejected(oldValue, value, storedValue.revision);
+            }
+
+            long now = System.currentTimeMillis();
+            long createdAt = storedValue.exists && storedValue.createdAtMs > 0L ? storedValue.createdAtMs : now;
+            long nextRevision = nextRevision(storedValue.revision);
+            String query = "INSERT INTO wired_variables (item_id, room_id, variable_type, variable_name, persistence, owner_type, owner_id, value, created_at, updated_at, revision) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                    "ON DUPLICATE KEY UPDATE room_id = VALUES(room_id), variable_type = VALUES(variable_type), " +
+                    "variable_name = VALUES(variable_name), persistence = VALUES(persistence), value = VALUES(value), " +
+                    "created_at = IF(created_at > 0, created_at, VALUES(created_at)), updated_at = VALUES(updated_at), revision = VALUES(revision)";
+
+            try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
+                 PreparedStatement statement = connection.prepareStatement(query)) {
+                statement.setInt(1, variable.itemId);
+                statement.setInt(2, variable.roomId);
+                statement.setInt(3, variable.variableType);
+                statement.setString(4, variable.variableName);
+                statement.setInt(5, variable.persistence.code);
+                statement.setInt(6, ownerType);
+                statement.setInt(7, ownerId);
+                statement.setLong(8, value);
+                statement.setLong(9, createdAt);
+                statement.setLong(10, now);
+                statement.setLong(11, nextRevision);
+                statement.executeUpdate();
+                return WiredVariableMutationReceipt.committed(storedValue.exists, oldValue, value, nextRevision);
+            } catch (SQLException e) {
+                LOGGER.error("Caught SQL exception", e);
+                return WiredVariableMutationReceipt.persistenceFailed(oldValue, value, storedValue.revision);
+            }
+        }
+    }
+
+    public static RemovalResult removeSharedValue(VariableDefinition variable, int ownerType, int ownerId) {
+        if (variable == null) {
+            return RemovalResult.failed();
+        }
+
+        synchronized (roomWriteLock(variable.roomId)) {
+            StoredValue storedValue = loadStoredValue(variable.itemId, ownerType, ownerId);
+            if (!storedValue.exists) {
+                return RemovalResult.notFound();
+            }
+
+            try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
+                 PreparedStatement statement = connection.prepareStatement("DELETE FROM wired_variables WHERE item_id = ? AND owner_type = ? AND owner_id = ?")) {
+                statement.setInt(1, variable.itemId);
+                statement.setInt(2, ownerType);
+                statement.setInt(3, ownerId);
+                statement.executeUpdate();
+                return RemovalResult.removed(storedValue);
+            } catch (SQLException e) {
+                LOGGER.error("Caught SQL exception", e);
+                return RemovalResult.failed(storedValue);
+            }
+        }
     }
 
     public static boolean hasValue(InteractionWiredVariable variable, int ownerType, int ownerId) {
@@ -154,12 +240,16 @@ public final class WiredVariableStore {
     }
 
     private static boolean isAnyVariableLimitReached(InteractionWiredVariable variable, int ownerType, int ownerId) {
-        return isOwnerVariableLimitReached(variable, ownerType, ownerId)
-                || isDefinitionVariableLimitReached(variable)
-                || isRoomVariableLimitReached(variable);
+        return isAnyVariableLimitReached(variable.getId(), variable.getRoomId(), ownerType, ownerId);
     }
 
-    private static boolean isOwnerVariableLimitReached(InteractionWiredVariable variable, int ownerType, int ownerId) {
+    private static boolean isAnyVariableLimitReached(int itemId, int roomId, int ownerType, int ownerId) {
+        return isOwnerVariableLimitReached(roomId, ownerType, ownerId)
+                || isDefinitionVariableLimitReached(itemId)
+                || isRoomVariableLimitReached(roomId);
+    }
+
+    private static boolean isOwnerVariableLimitReached(int roomId, int ownerType, int ownerId) {
         int limit = getVariableLimit(ownerType);
         if (limit < 0) {
             return false;
@@ -169,7 +259,7 @@ public final class WiredVariableStore {
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
              PreparedStatement statement = connection.prepareStatement(query)) {
-            statement.setInt(1, variable.getRoomId());
+            statement.setInt(1, roomId);
             statement.setInt(2, ownerType);
             statement.setInt(3, ownerId);
 
@@ -183,18 +273,18 @@ public final class WiredVariableStore {
         return false;
     }
 
-    private static boolean isDefinitionVariableLimitReached(InteractionWiredVariable variable) {
+    private static boolean isDefinitionVariableLimitReached(int itemId) {
         int limit = Emulator.getConfig().getInt("hotel.room.variable.definition.max", 10000);
         return limit >= 0 && countValues(
                 "SELECT COUNT(*) FROM wired_variables WHERE item_id = ?",
-                variable.getId()) >= limit;
+                itemId) >= limit;
     }
 
-    private static boolean isRoomVariableLimitReached(InteractionWiredVariable variable) {
+    private static boolean isRoomVariableLimitReached(int roomId) {
         int limit = Emulator.getConfig().getInt("hotel.room.variable.total.max", 50000);
         return limit >= 0 && countValues(
                 "SELECT COUNT(*) FROM wired_variables WHERE room_id = ?",
-                variable.getRoomId()) >= limit;
+                roomId) >= limit;
     }
 
     private static int countValues(String query, int value) {
@@ -227,8 +317,16 @@ public final class WiredVariableStore {
     }
 
     private static void logTooManyVariables(InteractionWiredVariable variable) {
-        Room room = Emulator.getGameEnvironment().getRoomManager().getRoom(variable.getRoomId());
+        logTooManyVariables(variable.getRoomId());
+    }
+
+    private static void logTooManyVariables(int roomId) {
+        Room room = Emulator.getGameEnvironment().getRoomManager().getRoom(roomId);
         WiredCreatorToolsLogManager.addSystemLog(room, "ERROR", "Wired Error: TOO_MANY_VARIABLES");
+    }
+
+    private static long nextRevision(long revision) {
+        return revision == Long.MAX_VALUE ? 1L : Math.max(1L, revision + 1L);
     }
 
     public static void updateVariableName(InteractionWiredVariable variable) {
@@ -288,7 +386,7 @@ public final class WiredVariableStore {
         public final long updatedAtMs;
         public final long revision;
 
-        StoredValue(boolean exists, long value, long createdAtMs, long updatedAtMs, long revision) {
+        public StoredValue(boolean exists, long value, long createdAtMs, long updatedAtMs, long revision) {
             this.exists = exists;
             this.value = value;
             this.createdAtMs = createdAtMs;
@@ -298,6 +396,53 @@ public final class WiredVariableStore {
 
         static StoredValue empty() {
             return new StoredValue(false, 0L, 0L, 0L, 0L);
+        }
+    }
+
+    public static final class VariableDefinition {
+        public final int itemId;
+        public final int roomId;
+        public final int variableType;
+        public final String variableName;
+        public final WiredVariablePersistence persistence;
+
+        public VariableDefinition(int itemId, int roomId, int variableType, String variableName,
+                                  WiredVariablePersistence persistence) {
+            this.itemId = itemId;
+            this.roomId = roomId;
+            this.variableType = variableType;
+            this.variableName = variableName == null ? "" : variableName;
+            this.persistence = persistence == null
+                    ? WiredVariablePersistence.ROOM_ACTIVE
+                    : persistence;
+        }
+    }
+
+    public static final class RemovalResult {
+        public final boolean succeeded;
+        public final boolean removed;
+        public final StoredValue storedValue;
+
+        private RemovalResult(boolean succeeded, boolean removed, StoredValue storedValue) {
+            this.succeeded = succeeded;
+            this.removed = removed;
+            this.storedValue = storedValue;
+        }
+
+        static RemovalResult removed(StoredValue storedValue) {
+            return new RemovalResult(true, true, storedValue);
+        }
+
+        static RemovalResult notFound() {
+            return new RemovalResult(true, false, StoredValue.empty());
+        }
+
+        static RemovalResult failed() {
+            return failed(StoredValue.empty());
+        }
+
+        static RemovalResult failed(StoredValue storedValue) {
+            return new RemovalResult(false, false, storedValue);
         }
     }
 

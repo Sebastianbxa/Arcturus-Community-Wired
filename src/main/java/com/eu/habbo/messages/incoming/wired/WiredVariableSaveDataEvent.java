@@ -74,7 +74,7 @@ public class WiredVariableSaveDataEvent extends MessageHandler {
                     sourceVariableType,
                     data.sourceVariableName,
                     persistenceCode == 1,
-                    this.client.getHabbo().getHabboInfo().getId()
+                    room.getOwnerId()
             );
 
             room.getRoomSpecialTypes().refreshVariable(variable);
@@ -153,6 +153,8 @@ public class WiredVariableSaveDataEvent extends MessageHandler {
             return;
         }
 
+        WiredVariableFromAnotherRoom.invalidateSourceDefinition(room.getId(), variable.getType(), oldName);
+        WiredVariableFromAnotherRoom.invalidateSourceDefinition(room.getId(), variable.getType(), normalizedName);
         room.getRoomSpecialTypes().refreshVariable(variable);
         this.client.sendResponse(new WiredSavedComposer());
         variable.needsUpdate(true);

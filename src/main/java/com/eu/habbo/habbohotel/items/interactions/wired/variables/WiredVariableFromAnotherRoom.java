@@ -7,6 +7,7 @@ import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.wired.WiredVariablePersistence;
 import com.eu.habbo.habbohotel.wired.WiredVariableType;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
+import com.eu.habbo.habbohotel.wired.variables.WiredVariableMutationReceipt;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableName;
 import com.eu.habbo.habbohotel.wired.variables.WiredVariableStore;
 import com.eu.habbo.messages.ServerMessage;
@@ -21,10 +22,13 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
     private static final Logger LOGGER = LoggerFactory.getLogger(WiredVariableFromAnotherRoom.class);
     private static final int LAYOUT_CODE = 4;
+    private static final ConcurrentHashMap<SourceKey, SourceDefinition> SOURCE_DEFINITIONS = new ConcurrentHashMap<>();
 
     private int sourceRoomId;
     private WiredVariableType sourceVariableType = WiredVariableType.GLOBAL;
@@ -58,7 +62,7 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
         this.sourceVariableName = WiredVariableName.normalize(sourceVariableName);
         this.readOnly = readOnly;
         this.ownerId = ownerId;
-        this.setLoadedValue(this.getValue());
+        this.setLoadedValue(0L);
     }
 
     public int getSourceRoomId() {
@@ -80,148 +84,243 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
         }
 
         this.sourceVariableName = normalizedName;
-        this.setLoadedValue(this.getValue());
+        this.setLoadedValue(0L);
     }
 
     @Override
     public boolean hasValue() {
-        InteractionWiredVariable source = this.getSourceVariable();
-        return source != null && source.hasValue();
+        InteractionWiredVariable source = this.getLoadedSourceVariable();
+        if (source != null) {
+            return source.hasValue();
+        }
+
+        SourceDefinition definition = this.findSourceDefinition();
+        return definition != null && (definition.type == WiredVariableType.GLOBAL || definition.hasValue);
     }
 
     @Override
     public long getValue() {
-        InteractionWiredVariable source = this.getSourceVariable();
-        return source == null ? 0L : source.getValue();
+        InteractionWiredVariable source = this.getLoadedSourceVariable();
+        if (source != null) {
+            return source.getValue();
+        }
+
+        SourceDefinition definition = this.findSourceDefinition();
+        if (definition == null || definition.type != WiredVariableType.GLOBAL) {
+            return 0L;
+        }
+
+        return WiredVariableStore.loadStoredValue(
+                definition.variable,
+                WiredVariableStore.OWNER_ROOM,
+                0).value;
     }
 
     @Override
     public void setValue(long value) {
-        if (this.readOnly) return;
+        this.setValueWithReceipt(value);
+    }
 
-        InteractionWiredVariable source = this.getSourceVariable();
-        if (source == null) return;
-
-        boolean existed = source.hasValue();
-        long oldValue = existed ? source.getValue() : 0L;
-        source.setValue(value);
-        boolean existsNow = source.hasValue();
-        long newValue = existsNow ? source.getValue() : 0L;
-        if ((!existed && existsNow) || oldValue != newValue) {
-            this.fireVariableChanged(WiredVariableStore.OWNER_ROOM, 0,
-                    existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+    @Override
+    public WiredVariableMutationReceipt setValueWithReceipt(long value) {
+        if (this.getType() != WiredVariableType.GLOBAL) {
+            return WiredVariableMutationReceipt.rejected(0L, value, 0L);
         }
+
+        if (this.readOnly) {
+            return WiredVariableMutationReceipt.rejected(this.getValue(), value, this.getRevision());
+        }
+
+        SourceDefinition definition = this.findSourceDefinition();
+        if (definition == null || definition.type != WiredVariableType.GLOBAL) {
+            return WiredVariableMutationReceipt.rejected(0L, value, 0L);
+        }
+
+        WiredVariableMutationReceipt receipt = WiredVariableStore.setSharedValue(
+                definition.variable,
+                WiredVariableStore.OWNER_ROOM,
+                0,
+                value);
+        this.refreshLoadedSource(definition, 0);
+        this.fireCommittedChange(WiredVariableStore.OWNER_ROOM, 0, receipt);
+        return receipt;
     }
 
     @Override
     public long getValue(int ownerId) {
-        InteractionWiredVariable source = this.getSourceVariable();
-        return source == null ? 0L : source.getValue(ownerId);
+        InteractionWiredVariable source = this.getLoadedSourceVariable();
+        if (source != null) {
+            return source.getValue(ownerId);
+        }
+
+        SourceDefinition definition = this.findSourceDefinition();
+        if (definition == null) {
+            return 0L;
+        }
+
+        int ownerType = definition.type == WiredVariableType.USER
+                ? WiredVariableStore.OWNER_USER
+                : WiredVariableStore.OWNER_ROOM;
+        int storedOwnerId = definition.type == WiredVariableType.USER ? ownerId : 0;
+        return WiredVariableStore.loadStoredValue(definition.variable, ownerType, storedOwnerId).value;
     }
 
     @Override
     public void setValue(int ownerId, long value) {
-        if (this.readOnly) return;
+        this.setValueWithReceipt(ownerId, value);
+    }
 
-        InteractionWiredVariable source = this.getSourceVariable();
-        if (source == null) return;
-
-        if (source.getType() != WiredVariableType.USER) {
-            this.setValue(value);
-            return;
+    @Override
+    public WiredVariableMutationReceipt setValueWithReceipt(int ownerId, long value) {
+        if (this.getType() != WiredVariableType.USER) {
+            return this.setValueWithReceipt(value);
         }
 
-        boolean existed = source.hasValue(ownerId);
-        long oldValue = existed ? source.getValue(ownerId) : 0L;
-        source.setValue(ownerId, value);
-        boolean existsNow = source.hasValue(ownerId);
-        long newValue = existsNow ? source.getValue(ownerId) : 0L;
-        if ((!existed && existsNow) || oldValue != newValue) {
-            this.fireVariableChanged(WiredVariableStore.OWNER_USER, ownerId,
-                    existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+        if (this.readOnly || ownerId <= 0) {
+            return WiredVariableMutationReceipt.rejected(this.getValue(ownerId), value, this.getRevision(ownerId));
         }
+
+        SourceDefinition definition = this.findSourceDefinition();
+        if (definition == null || definition.type != WiredVariableType.USER || !definition.hasValue) {
+            return WiredVariableMutationReceipt.rejected(0L, value, 0L);
+        }
+
+        WiredVariableMutationReceipt receipt = WiredVariableStore.setSharedValue(
+                definition.variable,
+                WiredVariableStore.OWNER_USER,
+                ownerId,
+                value);
+        this.refreshLoadedSource(definition, ownerId);
+        this.fireCommittedChange(WiredVariableStore.OWNER_USER, ownerId, receipt);
+        return receipt;
     }
 
     @Override
     public boolean hasValue(int ownerId) {
-        InteractionWiredVariable source = this.getSourceVariable();
-        return source != null && source.hasValue(ownerId);
+        InteractionWiredVariable source = this.getLoadedSourceVariable();
+        if (source != null) {
+            return source.hasValue(ownerId);
+        }
+
+        SourceDefinition definition = this.findSourceDefinition();
+        if (definition == null) {
+            return false;
+        }
+        if (definition.type == WiredVariableType.GLOBAL) {
+            return true;
+        }
+
+        return ownerId > 0 && WiredVariableStore.loadStoredValue(
+                definition.variable,
+                WiredVariableStore.OWNER_USER,
+                ownerId).exists;
     }
 
     @Override
     public void giveValue(int ownerId, long value, boolean overrideExisting) {
         if (this.readOnly) return;
 
-        InteractionWiredVariable source = this.getSourceVariable();
-        if (source == null || (!overrideExisting && source.hasValue(ownerId))) return;
+        SourceDefinition definition = this.findSourceDefinition();
+        if (definition == null) {
+            return;
+        }
 
-        if (source.getType() != WiredVariableType.USER) {
-            boolean existed = source.hasValue();
-            long oldValue = existed ? source.getValue() : 0L;
-            source.giveValue(ownerId, value, overrideExisting);
-            long newValue = source.getValue();
-            if ((!existed && source.hasValue()) || oldValue != newValue) {
-                this.fireVariableChanged(WiredVariableStore.OWNER_ROOM, 0,
-                        existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+        if (definition.type == WiredVariableType.GLOBAL) {
+            if (overrideExisting) {
+                WiredVariableMutationReceipt receipt = WiredVariableStore.setSharedValue(
+                        definition.variable,
+                        WiredVariableStore.OWNER_ROOM,
+                        0,
+                        value);
+                this.refreshLoadedSource(definition, 0);
+                this.fireCommittedChange(WiredVariableStore.OWNER_ROOM, 0, receipt);
             }
             return;
         }
 
-        boolean existed = source.hasValue(ownerId);
-        long oldValue = existed ? source.getValue(ownerId) : 0L;
-        source.giveValue(ownerId, value, overrideExisting);
-        long newValue = source.getValue(ownerId);
-        if ((!existed && source.hasValue(ownerId)) || oldValue != newValue) {
-            this.fireVariableChanged(WiredVariableStore.OWNER_USER, ownerId,
-                    existed ? this.changeAction(oldValue, newValue) : VARIABLE_ACTION_CREATED, oldValue, newValue);
+        if (ownerId <= 0) {
+            return;
         }
+
+        WiredVariableStore.StoredValue storedValue = WiredVariableStore.loadStoredValue(
+                definition.variable,
+                WiredVariableStore.OWNER_USER,
+                ownerId);
+        if (storedValue.exists && !overrideExisting) {
+            return;
+        }
+
+        WiredVariableMutationReceipt receipt = WiredVariableStore.setSharedValue(
+                definition.variable,
+                WiredVariableStore.OWNER_USER,
+                ownerId,
+                definition.hasValue ? value : 0L);
+        this.refreshLoadedSource(definition, ownerId);
+        this.fireCommittedChange(WiredVariableStore.OWNER_USER, ownerId, receipt);
     }
 
     @Override
     public void removeValue(int ownerId) {
         if (this.readOnly) return;
 
-        InteractionWiredVariable source = this.getSourceVariable();
-        if (source == null || !source.hasValue(ownerId)) return;
-
-        if (source.getType() != WiredVariableType.USER) {
-            long oldValue = source.getValue();
-            source.removeValue(ownerId);
-            if (!source.hasValue()) {
-                this.fireVariableChanged(WiredVariableStore.OWNER_ROOM, 0, VARIABLE_ACTION_DELETED, oldValue, 0L);
-            }
+        SourceDefinition definition = this.findSourceDefinition();
+        if (definition == null) {
             return;
         }
 
-        long oldValue = source.getValue(ownerId);
-        source.removeValue(ownerId);
-        if (!source.hasValue(ownerId)) {
-            this.fireVariableChanged(WiredVariableStore.OWNER_USER, ownerId, VARIABLE_ACTION_DELETED, oldValue, 0L);
+        if (definition.type == WiredVariableType.GLOBAL) {
+            WiredVariableStore.setSharedValue(definition.variable, WiredVariableStore.OWNER_ROOM, 0, 0L);
+            this.refreshLoadedSource(definition, 0);
+            return;
+        }
+
+        if (ownerId <= 0) {
+            return;
+        }
+
+        WiredVariableStore.RemovalResult result = WiredVariableStore.removeSharedValue(
+                definition.variable,
+                WiredVariableStore.OWNER_USER,
+                ownerId);
+        this.refreshLoadedSource(definition, ownerId);
+        if (result.succeeded && result.removed) {
+            this.fireVariableChanged(
+                    WiredVariableStore.OWNER_USER,
+                    ownerId,
+                    VARIABLE_ACTION_DELETED,
+                    result.storedValue.value,
+                    0L);
         }
     }
 
     @Override
     public long getCreatedAtMs() {
-        InteractionWiredVariable source = this.getSourceVariable();
-        return source == null ? 0L : source.getCreatedAtMs();
+        return this.getStoredMetadata(false, 0).createdAtMs;
     }
 
     @Override
     public long getUpdatedAtMs() {
-        InteractionWiredVariable source = this.getSourceVariable();
-        return source == null ? 0L : source.getUpdatedAtMs();
+        return this.getStoredMetadata(false, 0).updatedAtMs;
     }
 
     @Override
     public long getCreatedAtMs(int ownerId) {
-        InteractionWiredVariable source = this.getSourceVariable();
-        return source == null ? 0L : source.getCreatedAtMs(ownerId);
+        return this.getStoredMetadata(true, ownerId).createdAtMs;
     }
 
     @Override
     public long getUpdatedAtMs(int ownerId) {
-        InteractionWiredVariable source = this.getSourceVariable();
-        return source == null ? 0L : source.getUpdatedAtMs(ownerId);
+        return this.getStoredMetadata(true, ownerId).updatedAtMs;
+    }
+
+    @Override
+    public long getRevision() {
+        return this.getStoredMetadata(false, 0).revision;
+    }
+
+    @Override
+    public long getRevision(int ownerId) {
+        return this.getStoredMetadata(true, ownerId).revision;
     }
 
     @Override
@@ -248,7 +347,6 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
                 this.sourceVariableType = normalizeSourceType(WiredVariableType.fromCode(data.sourceVariableType));
                 this.sourceVariableName = WiredVariableName.normalize(data.sourceVariableName);
                 this.readOnly = data.readOnly;
-                this.ownerId = data.ownerId > 0 ? data.ownerId : this.ownerId;
             }
         }
     }
@@ -285,13 +383,27 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
         // References never own room-active values, so room cleanup must not delete the source value.
     }
 
-    private InteractionWiredVariable getSourceVariable() {
+    @Override
+    public void releaseOwnerCache(int ownerId) {
+        if (this.getType() != WiredVariableType.USER || ownerId <= 0) {
+            return;
+        }
+
+        InteractionWiredVariable source = this.getLoadedSourceVariable();
+        if (source != null) {
+            source.releaseOwnerCache(ownerId);
+        }
+    }
+
+    private InteractionWiredVariable getLoadedSourceVariable() {
         if (this.sourceRoomId <= 0 || this.sourceVariableName.isEmpty()) {
             return null;
         }
 
-        Room sourceRoom = Emulator.getGameEnvironment().getRoomManager().loadRoom(this.sourceRoomId, true);
-        if (sourceRoom == null || sourceRoom.getRoomSpecialTypes() == null) {
+        // A reference may reuse an already-active source, but must never wake an unloaded room.
+        Room sourceRoom = Emulator.getGameEnvironment().getRoomManager().getRoom(this.sourceRoomId);
+        if (sourceRoom == null || !sourceRoom.isLoaded() || sourceRoom.getOwnerId() != this.ownerId ||
+                sourceRoom.getRoomSpecialTypes() == null) {
             return null;
         }
 
@@ -301,6 +413,137 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
         }
 
         return source;
+    }
+
+    private SourceDefinition findSourceDefinition() {
+        if (this.sourceRoomId <= 0 || this.ownerId <= 0 || this.sourceVariableName.isEmpty()) {
+            return null;
+        }
+
+        SourceKey key = new SourceKey(this.ownerId, this.sourceRoomId, this.getType(), this.sourceVariableName);
+        InteractionWiredVariable loadedSource = this.getLoadedSourceVariable();
+        if (loadedSource != null) {
+            WiredVariableStore.VariableDefinition variable = new WiredVariableStore.VariableDefinition(
+                    loadedSource.getId(),
+                    loadedSource.getRoomId(),
+                    loadedSource.getType().code,
+                    loadedSource.getVariableName(),
+                    loadedSource.getPersistence());
+            SourceDefinition definition = new SourceDefinition(
+                    variable,
+                    loadedSource.getType(),
+                    loadedSource.hasValue());
+            SOURCE_DEFINITIONS.put(key, definition);
+            return definition;
+        }
+
+        SourceDefinition cached = SOURCE_DEFINITIONS.get(key);
+        if (cached != null) {
+            return cached;
+        }
+
+        // Definition metadata is enough to address the centralized value store.
+        String interactionType = this.getType() == WiredVariableType.USER ? "wf_var_user" : "wf_var_room";
+        String query = "SELECT items.id, items.wired_data " +
+                "FROM items " +
+                "INNER JOIN rooms ON rooms.id = items.room_id " +
+                "INNER JOIN items_base ON items_base.id = items.item_id " +
+                "WHERE items.room_id = ? AND rooms.owner_id = ? AND items_base.interaction_type = ?";
+
+        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
+             PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setInt(1, this.sourceRoomId);
+            statement.setInt(2, this.ownerId);
+            statement.setString(3, interactionType);
+
+            try (ResultSet set = statement.executeQuery()) {
+                while (set.next()) {
+                    VariableBoxData data = readVariableBoxData(set.getString("wired_data"));
+                    if (data == null || data.persistence != WiredVariablePersistence.SHARED_PERMANENT.code ||
+                            !this.sourceVariableName.equals(WiredVariableName.normalize(data.name))) {
+                        continue;
+                    }
+
+                    WiredVariableStore.VariableDefinition variable = new WiredVariableStore.VariableDefinition(
+                            set.getInt("id"),
+                            this.sourceRoomId,
+                            this.getType().code,
+                            this.sourceVariableName,
+                            WiredVariablePersistence.SHARED_PERMANENT);
+                    SourceDefinition definition = new SourceDefinition(variable, this.getType(), data.hasValue);
+                    SourceDefinition existing = SOURCE_DEFINITIONS.putIfAbsent(key, definition);
+                    return existing == null ? definition : existing;
+                }
+            }
+        } catch (SQLException e) {
+            LOGGER.error("Caught SQL exception", e);
+        }
+
+        return null;
+    }
+
+    private void refreshLoadedSource(SourceDefinition definition, int ownerId) {
+        InteractionWiredVariable source = this.getLoadedSourceVariable();
+        if (source == null || definition == null || source.getId() != definition.variable.itemId) {
+            return;
+        }
+
+        int ownerType = definition.type == WiredVariableType.USER
+                ? WiredVariableStore.OWNER_USER
+                : WiredVariableStore.OWNER_ROOM;
+        int storedOwnerId = ownerType == WiredVariableStore.OWNER_USER ? ownerId : 0;
+        WiredVariableStore.StoredValue storedValue = WiredVariableStore.loadStoredValue(
+                definition.variable,
+                ownerType,
+                storedOwnerId);
+        source.refreshSharedValue(storedOwnerId, storedValue);
+    }
+
+    public static void invalidateSourceDefinition(int roomId, WiredVariableType type, String variableName) {
+        String normalizedName = WiredVariableName.normalize(variableName);
+        WiredVariableType normalizedType = normalizeSourceType(type);
+        SOURCE_DEFINITIONS.keySet().removeIf(key ->
+                key.roomId == roomId &&
+                        key.type == normalizedType &&
+                        (normalizedName.isEmpty() || key.variableName.equals(normalizedName)));
+    }
+
+    public static void invalidateSourceDefinitions(int roomId) {
+        SOURCE_DEFINITIONS.keySet().removeIf(key -> key.roomId == roomId);
+    }
+
+    private WiredVariableStore.StoredValue getStoredMetadata(boolean ownerScoped, int ownerId) {
+        InteractionWiredVariable source = this.getLoadedSourceVariable();
+        if (source != null) {
+            boolean exists = ownerScoped ? source.hasValue(ownerId) : source.hasValue();
+            long value = ownerScoped ? source.getValue(ownerId) : source.getValue();
+            long createdAt = ownerScoped ? source.getCreatedAtMs(ownerId) : source.getCreatedAtMs();
+            long updatedAt = ownerScoped ? source.getUpdatedAtMs(ownerId) : source.getUpdatedAtMs();
+            long revision = ownerScoped ? source.getRevision(ownerId) : source.getRevision();
+            return new WiredVariableStore.StoredValue(exists, value, createdAt, updatedAt, revision);
+        }
+
+        SourceDefinition definition = this.findSourceDefinition();
+        if (definition == null) {
+            return new WiredVariableStore.StoredValue(false, 0L, 0L, 0L, 0L);
+        }
+
+        int ownerType = ownerScoped && definition.type == WiredVariableType.USER
+                ? WiredVariableStore.OWNER_USER
+                : WiredVariableStore.OWNER_ROOM;
+        int storedOwnerId = ownerType == WiredVariableStore.OWNER_USER ? ownerId : 0;
+        return WiredVariableStore.loadStoredValue(definition.variable, ownerType, storedOwnerId);
+    }
+
+    private void fireCommittedChange(int ownerType, int ownerId, WiredVariableMutationReceipt receipt) {
+        if (receipt == null || !receipt.committed()) {
+            return;
+        }
+
+        int action = receipt.status == WiredVariableMutationReceipt.Status.CREATED
+                ? VARIABLE_ACTION_CREATED
+                : this.changeAction(receipt.oldValue, receipt.newValue);
+        this.fireVariableChanged(ownerType, ownerId, action, receipt.oldValue, receipt.newValue);
     }
 
     private List<RoomOption> getSharedRooms(int ownerId) {
@@ -342,8 +585,8 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
     }
 
     private void mergeLoadedSharedRoom(Map<Integer, RoomOption> rooms, int roomId) {
-        Room loadedRoom = Emulator.getGameEnvironment().getRoomManager().loadRoom(roomId, true);
-        if (loadedRoom == null || loadedRoom.getRoomSpecialTypes() == null) {
+        Room loadedRoom = Emulator.getGameEnvironment().getRoomManager().getRoom(roomId);
+        if (loadedRoom == null || !loadedRoom.isLoaded() || loadedRoom.getRoomSpecialTypes() == null) {
             return;
         }
 
@@ -361,23 +604,27 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
     }
 
     private static SharedVariable readSharedVariable(String interactionType, String wiredData) {
+        VariableBoxData data = readVariableBoxData(wiredData);
+        if (data == null || data.persistence != WiredVariablePersistence.SHARED_PERMANENT.code) {
+            return null;
+        }
+
+        String name = WiredVariableName.normalize(data.name);
+        if (!WiredVariableName.isValid(name)) {
+            return null;
+        }
+
+        WiredVariableType type = "wf_var_user".equals(interactionType) ? WiredVariableType.USER : WiredVariableType.GLOBAL;
+        return new SharedVariable(type.code, name);
+    }
+
+    private static VariableBoxData readVariableBoxData(String wiredData) {
         if (wiredData == null || !wiredData.startsWith("{")) {
             return null;
         }
 
         try {
-            VariableBoxData data = WiredManager.getGson().fromJson(wiredData, VariableBoxData.class);
-            if (data == null || data.persistence != WiredVariablePersistence.SHARED_PERMANENT.code) {
-                return null;
-            }
-
-            String name = WiredVariableName.normalize(data.name);
-            if (!WiredVariableName.isValid(name)) {
-                return null;
-            }
-
-            WiredVariableType type = "wf_var_user".equals(interactionType) ? WiredVariableType.USER : WiredVariableType.GLOBAL;
-            return new SharedVariable(type.code, name);
+            return WiredManager.getGson().fromJson(wiredData, VariableBoxData.class);
         } catch (Exception ignored) {
             return null;
         }
@@ -566,6 +813,49 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
     static class VariableBoxData {
         String name;
         int persistence;
+        boolean hasValue;
+    }
+
+    static class SourceDefinition {
+        final WiredVariableStore.VariableDefinition variable;
+        final WiredVariableType type;
+        final boolean hasValue;
+
+        SourceDefinition(WiredVariableStore.VariableDefinition variable, WiredVariableType type, boolean hasValue) {
+            this.variable = variable;
+            this.type = type;
+            this.hasValue = hasValue;
+        }
+    }
+
+    static class SourceKey {
+        final int ownerId;
+        final int roomId;
+        final WiredVariableType type;
+        final String variableName;
+
+        SourceKey(int ownerId, int roomId, WiredVariableType type, String variableName) {
+            this.ownerId = ownerId;
+            this.roomId = roomId;
+            this.type = normalizeSourceType(type);
+            this.variableName = WiredVariableName.normalize(variableName);
+        }
+
+        @Override
+        public boolean equals(Object object) {
+            if (this == object) return true;
+            if (!(object instanceof SourceKey)) return false;
+            SourceKey key = (SourceKey) object;
+            return this.ownerId == key.ownerId &&
+                    this.roomId == key.roomId &&
+                    this.type == key.type &&
+                    this.variableName.equals(key.variableName);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(this.ownerId, this.roomId, this.type, this.variableName);
+        }
     }
 
     @Override

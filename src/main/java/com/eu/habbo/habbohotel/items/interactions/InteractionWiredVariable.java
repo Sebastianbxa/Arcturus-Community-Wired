@@ -222,6 +222,24 @@ public abstract class InteractionWiredVariable extends InteractionWired implemen
         // Global variables have no owner-scoped cache.
     }
 
+    public synchronized void refreshSharedValue(int ownerId, WiredVariableStore.StoredValue storedValue) {
+        if (this.persistence != WiredVariablePersistence.SHARED_PERMANENT || storedValue == null) {
+            return;
+        }
+
+        if (storedValue.exists) {
+            this.setLoadedValue(
+                    storedValue.value,
+                    storedValue.createdAtMs,
+                    storedValue.updatedAtMs,
+                    storedValue.revision);
+        } else {
+            this.value = 0L;
+            this.clearValueTimes();
+            this.revision = 0L;
+        }
+    }
+
     public int getLoadedValueCount() {
         return this.createdAtMs > 0L ? 1 : 0;
     }

@@ -75,6 +75,12 @@ public class WiredVariableGlobal extends InteractionWiredVariable {
         }
     }
 
+    @Override
+    public void onPickUp() {
+        WiredVariableFromAnotherRoom.invalidateSourceDefinition(this.getRoomId(), this.getType(), this.getVariableName());
+        super.onPickUp();
+    }
+
     static class JsonData {
         String name;
         int persistence;
