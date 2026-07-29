@@ -81,9 +81,34 @@ public final class Emulator {
 
     @SuppressWarnings("resource")
     public static void promptEnterKey(){
+        // Con -Dhabbo.acceptTerms=true se saltea la espera.
+        //
+        // El prompt asume una consola con alguien mirando. Cuando el emulador
+        // arranca como servicio, desde un script o con la salida redirigida no
+        // hay quien apriete ENTER: el Scanner encuentra el fin de la entrada,
+        // nextLine() tira NoSuchElementException y el arranque se cae antes de
+        // levantar nada.
+        //
+        // No se toca la version para esquivarlo: el aviso de beta se sigue
+        // imprimiendo, solo se omite la espera cuando se pide explicitamente.
+        if (Boolean.getBoolean("habbo.acceptTerms")) {
+            System.out.println("(terminos aceptados via -Dhabbo.acceptTerms)");
+            return;
+        }
+
         System.out.println("\n");
         System.out.println("Press \"ENTER\" if you agree to the terms stated above...");
+
         Scanner scanner = new Scanner(System.in);
+
+        // Sin consola interactiva no hay linea para leer. Se continua en vez de
+        // reventar: quien arranca sin terminal no puede aceptar nada, y morir
+        // aca deja el servidor abajo por un prompt.
+        if (!scanner.hasNextLine()) {
+            System.out.println("(sin consola interactiva, se continua)");
+            return;
+        }
+
         scanner.nextLine();
     }
 
