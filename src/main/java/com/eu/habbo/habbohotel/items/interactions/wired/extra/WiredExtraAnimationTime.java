@@ -8,6 +8,7 @@ import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
 import com.eu.habbo.habbohotel.wired.core.WiredContext;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
+import com.eu.habbo.habbohotel.wired.api.WiredStack;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.wired.WiredSaveException;
 
@@ -37,8 +38,22 @@ public class WiredExtraAnimationTime extends InteractionWiredExtra {
             return 0;
         }
 
-        WiredExtraAnimationTime extra = ctx.stack().extra(WiredExtraAnimationTime.class);
-        return extra == null ? 0 : extra.animationTimeMs;
+        return resolveAnimationTime(ctx.stack());
+    }
+
+    public static int resolveAnimationTime(WiredStack stack) {
+        if (stack == null) {
+            return 0;
+        }
+
+        long combinedTimeMs = 0L;
+        for (WiredExtraAnimationTime extra : stack.extras(WiredExtraAnimationTime.class)) {
+            combinedTimeMs += extra.animationTimeMs;
+            if (combinedTimeMs >= Integer.MAX_VALUE) {
+                return Integer.MAX_VALUE;
+            }
+        }
+        return (int) combinedTimeMs;
     }
 
     @Override

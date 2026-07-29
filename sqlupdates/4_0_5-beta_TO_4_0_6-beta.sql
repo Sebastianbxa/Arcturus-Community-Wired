@@ -16,6 +16,8 @@ INSERT INTO `emulator_settings` (`key`, `value`) VALUES
     ('wired.executor.overload.ms', '250'),
     ('wired.signal.dispatch.batch.size', '25'),
     ('wired.signal.maxPayloadItems', '100'),
+    ('wired.engine.maxStepsPerExecution', '1000'),
+    ('wired.engine.maxEventsPerWindow', '1000'),
     ('wired.movement.item_interval.ms', '45'),
     ('wired.movement.persist.delay.ms', '5000'),
     ('hotel.wired.message.max_length', '200'),
@@ -39,6 +41,9 @@ ON DUPLICATE KEY UPDATE `value` = `value`;
 ALTER TABLE `wired_variables`
     ADD COLUMN IF NOT EXISTS `revision` bigint(20) NOT NULL DEFAULT 0 AFTER `updated_at`,
     ADD INDEX IF NOT EXISTS `idx_wired_variables_room_owner` (`room_id`, `owner_type`, `owner_id`);
+
+DELETE FROM `wired_variables`
+WHERE `owner_type` = 2 AND `owner_id` < 0;
 
 INSERT INTO `emulator_settings` (`key`, `value`) VALUES
     ('hotel.room.variable.definition.max', '10000'),

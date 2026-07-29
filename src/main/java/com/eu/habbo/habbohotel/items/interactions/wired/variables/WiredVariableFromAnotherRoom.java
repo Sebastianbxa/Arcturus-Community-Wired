@@ -423,7 +423,8 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
         }
 
         InteractionWiredVariable source = sourceRoom.getRoomSpecialTypes().getVariable(this.getType(), this.sourceVariableName);
-        if (source == null || source == this || source.getPersistence() != WiredVariablePersistence.SHARED_PERMANENT) {
+        if (source == null || source == this || source instanceof WiredVariableFromAnotherRoom
+                || source.getPersistence() != WiredVariablePersistence.SHARED_PERMANENT) {
             return null;
         }
 
@@ -452,13 +453,72 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
             return definition;
         }
 
+        Room activeSourceRoom = Emulator.getGameEnvironment().getRoomManager().getRoom(this.sourceRoomId);
+        if (activeSourceRoom != null && activeSourceRoom.isLoaded()) {
+            // A loaded room is authoritative. Do not fall back to stale cache/DB
+            // metadata when the named source is missing or is itself a reference.
+            SOURCE_DEFINITIONS.remove(key);
+            return null;
+        }
+
         SourceDefinition cached = SOURCE_DEFINITIONS.get(key);
         if (cached != null) {
             return cached;
         }
 
+        SourceDefinition discovered = findStoredConcreteSourceDefinition(
+                this.ownerId,
+                this.sourceRoomId,
+                this.getType(),
+                this.sourceVariableName);
+        if (discovered == null) {
+            return null;
+        }
+
+        SourceDefinition existing = SOURCE_DEFINITIONS.putIfAbsent(key, discovered);
+        return existing == null ? discovered : existing;
+    }
+
+    public static boolean isValidConcreteSource(int ownerId, int sourceRoomId,
+                                                WiredVariableType sourceVariableType,
+                                                String sourceVariableName) {
+        WiredVariableType normalizedType = normalizeSourceType(sourceVariableType);
+        String normalizedName = WiredVariableName.normalize(sourceVariableName);
+        if (ownerId <= 0 || sourceRoomId <= 0 || !WiredVariableName.isValid(normalizedName)) {
+            return false;
+        }
+
+        Room loadedRoom = Emulator.getGameEnvironment().getRoomManager().getRoom(sourceRoomId);
+        if (loadedRoom != null && loadedRoom.isLoaded()) {
+            if (loadedRoom.getOwnerId() != ownerId || loadedRoom.getRoomSpecialTypes() == null) {
+                return false;
+            }
+
+            InteractionWiredVariable source =
+                    loadedRoom.getRoomSpecialTypes().getVariable(normalizedType, normalizedName);
+            return source != null
+                    && !(source instanceof WiredVariableFromAnotherRoom)
+                    && source.getPersistence() == WiredVariablePersistence.SHARED_PERMANENT;
+        }
+
+        return findStoredConcreteSourceDefinition(
+                ownerId,
+                sourceRoomId,
+                normalizedType,
+                normalizedName) != null;
+    }
+
+    private static SourceDefinition findStoredConcreteSourceDefinition(int ownerId, int sourceRoomId,
+                                                                        WiredVariableType sourceVariableType,
+                                                                        String sourceVariableName) {
+        WiredVariableType normalizedType = normalizeSourceType(sourceVariableType);
+        String normalizedName = WiredVariableName.normalize(sourceVariableName);
+        if (ownerId <= 0 || sourceRoomId <= 0 || !WiredVariableName.isValid(normalizedName)) {
+            return null;
+        }
+
         // Definition metadata is enough to address the centralized value store.
-        String interactionType = this.getType() == WiredVariableType.USER ? "wf_var_user" : "wf_var_room";
+        String interactionType = normalizedType == WiredVariableType.USER ? "wf_var_user" : "wf_var_room";
         String query = "SELECT items.id, items.wired_data " +
                 "FROM items " +
                 "INNER JOIN rooms ON rooms.id = items.room_id " +
@@ -467,27 +527,25 @@ public class WiredVariableFromAnotherRoom extends InteractionWiredVariable {
 
         try (Connection connection = Emulator.getDatabase().getDataSource().getConnection();
              PreparedStatement statement = connection.prepareStatement(query)) {
-            statement.setInt(1, this.sourceRoomId);
-            statement.setInt(2, this.ownerId);
+            statement.setInt(1, sourceRoomId);
+            statement.setInt(2, ownerId);
             statement.setString(3, interactionType);
 
             try (ResultSet set = statement.executeQuery()) {
                 while (set.next()) {
                     VariableBoxData data = readVariableBoxData(set.getString("wired_data"));
                     if (data == null || data.persistence != WiredVariablePersistence.SHARED_PERMANENT.code ||
-                            !this.sourceVariableName.equals(WiredVariableName.normalize(data.name))) {
+                            !normalizedName.equals(WiredVariableName.normalize(data.name))) {
                         continue;
                     }
 
                     WiredVariableStore.VariableDefinition variable = new WiredVariableStore.VariableDefinition(
                             set.getInt("id"),
-                            this.sourceRoomId,
-                            this.getType().code,
-                            this.sourceVariableName,
+                            sourceRoomId,
+                            normalizedType.code,
+                            normalizedName,
                             WiredVariablePersistence.SHARED_PERMANENT);
-                    SourceDefinition definition = new SourceDefinition(variable, this.getType(), data.hasValue);
-                    SourceDefinition existing = SOURCE_DEFINITIONS.putIfAbsent(key, definition);
-                    return existing == null ? definition : existing;
+                    return new SourceDefinition(variable, normalizedType, data.hasValue);
                 }
             }
         } catch (SQLException e) {

@@ -58,6 +58,16 @@ public class WiredVariableSaveDataEvent extends MessageHandler {
                 return;
             }
 
+            if (!WiredVariableFromAnotherRoom.isValidConcreteSource(
+                    room.getOwnerId(),
+                    data.sourceRoomId,
+                    sourceVariableType,
+                    data.sourceVariableName)) {
+                this.client.sendResponse(new UpdateFailedComposer(
+                        "The referenced variable must be a shared room or user variable that you own."));
+                return;
+            }
+
             if (room.getRoomSpecialTypes().isVariableNameInUse(sourceVariableType, normalizedName, variable.getId())) {
                 this.client.sendResponse(new UpdateFailedComposer("Variable name is already in use in this room, please choose another one!"));
                 return;

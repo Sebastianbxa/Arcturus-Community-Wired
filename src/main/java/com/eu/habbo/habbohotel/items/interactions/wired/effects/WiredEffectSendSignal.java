@@ -344,7 +344,7 @@ public class WiredEffectSendSignal extends InteractionWiredEffect implements Wir
                 builder.build(),
                 this,
                 DefaultWiredServices.getInstance(),
-                new WiredState(Emulator.getConfig().getInt(WiredManager.CONFIG_MAX_STEPS, 100)),
+                WiredManager.createExecutionState(),
                 stuff
         );
     }

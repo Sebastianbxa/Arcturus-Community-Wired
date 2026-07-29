@@ -6,6 +6,7 @@ import com.eu.habbo.habbohotel.items.interactions.InteractionWiredExtra;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettings;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
+import com.eu.habbo.habbohotel.wired.api.WiredStack;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.wired.WiredSaveException;
@@ -13,7 +14,10 @@ import com.eu.habbo.messages.incoming.wired.WiredSaveException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Deque;
+import java.util.List;
 
 public class WiredExtraExecutionLimit extends InteractionWiredExtra {
     public static final int EXTRA_CODE = 1;
@@ -51,6 +55,35 @@ public class WiredExtraExecutionLimit extends InteractionWiredExtra {
 
         this.executionTimes.addLast(currentTime);
         return true;
+    }
+
+    /**
+     * Treats multiple execution-limit extras as a union of independent quotas.
+     * Each successful stack execution consumes one available slot from exactly
+     * one extra. Five identical 1-per-window extras therefore allow five
+     * executions per window instead of silently using an arbitrary one.
+     */
+    public static boolean allowExecution(WiredStack stack, long currentTime) {
+        if (stack == null) {
+            return true;
+        }
+
+        List<WiredExtraExecutionLimit> limits =
+                new ArrayList<>(stack.extras(WiredExtraExecutionLimit.class));
+        if (limits.isEmpty()) {
+            return true;
+        }
+
+        // Prefer quotas that recover sooner; ID is the stable tie-breaker.
+        limits.sort(Comparator
+                .comparingInt(WiredExtraExecutionLimit::timeWindowMs)
+                .thenComparingInt(WiredExtraExecutionLimit::getId));
+        for (WiredExtraExecutionLimit limit : limits) {
+            if (limit.allowExecution(currentTime)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -131,6 +164,10 @@ public class WiredExtraExecutionLimit extends InteractionWiredExtra {
 
     private int clampTimeWindowHalfSeconds(int value) {
         return Math.max(MIN_TIME_WINDOW_HALF_SECONDS, Math.min(MAX_TIME_WINDOW_HALF_SECONDS, value <= 0 ? DEFAULT_TIME_WINDOW_HALF_SECONDS : value));
+    }
+
+    private int timeWindowMs() {
+        return this.timeWindowHalfSeconds * 500;
     }
 
     private synchronized void clearExecutionTimes() {

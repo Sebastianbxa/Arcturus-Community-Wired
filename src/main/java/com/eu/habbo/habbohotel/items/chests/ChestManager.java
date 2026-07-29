@@ -843,7 +843,7 @@ public class ChestManager {
     }
 
     private WiredState createTransactionCompletedState(ChestDepositSession session, List<HabboItem> depositItems, int depositCoins, RewardResult rewardResult) {
-        WiredState state = new WiredState(Emulator.getConfig().getInt(WiredManager.CONFIG_MAX_STEPS, 100));
+        WiredState state = WiredManager.createExecutionState();
 
         state.setContextValue("@event.transaction_complete.multiplier", session == null ? 1 : session.getMultiplier());
         state.setContextValue("@event.transaction_complete.deposit.furni_count", depositItems == null ? 0 : depositItems.size());

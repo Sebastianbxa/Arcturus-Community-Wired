@@ -75,7 +75,8 @@ public final class WiredVariableStore {
     }
 
     public static StoredValue loadStoredValue(InteractionWiredVariable variable, int ownerType, int ownerId) {
-        if (variable == null || !variable.getPersistence().isPermanent() || variable.getVariableName().isEmpty()) {
+        if (variable == null || !variable.getPersistence().isPermanent() || variable.getVariableName().isEmpty()
+                || !canPersistOwner(ownerType, ownerId)) {
             return StoredValue.empty();
         }
 
@@ -83,7 +84,7 @@ public final class WiredVariableStore {
     }
 
     public static StoredValue loadStoredValue(int itemId, int ownerType, int ownerId) {
-        if (itemId <= 0) {
+        if (itemId <= 0 || !canPersistOwner(ownerType, ownerId)) {
             return StoredValue.empty();
         }
 
@@ -92,7 +93,7 @@ public final class WiredVariableStore {
     }
 
     public static StoredValue loadStoredValue(VariableDefinition variable, int ownerType, int ownerId) {
-        if (variable == null || variable.itemId <= 0) {
+        if (variable == null || variable.itemId <= 0 || !canPersistOwner(ownerType, ownerId)) {
             return StoredValue.empty();
         }
 
@@ -103,7 +104,8 @@ public final class WiredVariableStore {
     }
 
     public static WiredVariableMutationReceipt setSharedValue(VariableDefinition variable, int ownerType, int ownerId, long value) {
-        if (variable == null || !variable.persistence.isPermanent() || variable.variableName.isEmpty()) {
+        if (variable == null || !variable.persistence.isPermanent() || variable.variableName.isEmpty()
+                || !canPersistOwner(ownerType, ownerId)) {
             return WiredVariableMutationReceipt.rejected(0L, value, 0L);
         }
 
@@ -131,7 +133,7 @@ public final class WiredVariableStore {
     }
 
     public static RemovalResult removeSharedValue(VariableDefinition variable, int ownerType, int ownerId) {
-        if (variable == null || !variable.persistence.isPermanent()) {
+        if (variable == null || !variable.persistence.isPermanent() || !canPersistOwner(ownerType, ownerId)) {
             return RemovalResult.failed();
         }
 
@@ -169,6 +171,17 @@ public final class WiredVariableStore {
     public static SaveResult saveValue(InteractionWiredVariable variable, int ownerType, int ownerId, long value,
                                        boolean existed, long currentRevision) {
         if (variable == null) {
+            return SaveResult.failed();
+        }
+
+        // Runtime-spawned furniture uses negative IDs. Its variable values are valid
+        // for the lifetime of the room item, but must never enter the write-behind
+        // cache or MariaDB where owner IDs refer to persistent entities.
+        if (ownerType == OWNER_ITEM && ownerId < 0) {
+            return SaveResult.inMemory(currentRevision);
+        }
+
+        if (!canPersistOwner(ownerType, ownerId)) {
             return SaveResult.failed();
         }
 
@@ -455,6 +468,13 @@ public final class WiredVariableStore {
 
             try {
                 for (FlushSnapshot snapshot : snapshots) {
+                    if (!canPersistOwner(snapshot.cached.key.ownerType, snapshot.cached.key.ownerId)) {
+                        // Final persistence-boundary guard. Even if a future caller
+                        // accidentally places an ephemeral owner in the cache, it
+                        // can never be serialized to MariaDB.
+                        continue;
+                    }
+
                     if (snapshot.exists) {
                         upsert.setInt(1, snapshot.definition.itemId);
                         upsert.setInt(2, snapshot.definition.roomId);
@@ -588,6 +608,18 @@ public final class WiredVariableStore {
         }
     }
 
+    static boolean canPersistOwner(int ownerType, int ownerId) {
+        switch (ownerType) {
+            case OWNER_ROOM:
+                return ownerId == 0;
+            case OWNER_USER:
+            case OWNER_ITEM:
+                return ownerId > 0;
+            default:
+                return false;
+        }
+    }
+
     private static void logTooManyVariables(InteractionWiredVariable variable) {
         logTooManyVariables(variable.getRoomId());
     }
@@ -667,7 +699,11 @@ public final class WiredVariableStore {
     }
 
     public static boolean deleteValue(InteractionWiredVariable variable, int ownerType, int ownerId) {
-        if (variable == null || !variable.getPersistence().isPermanent()) {
+        if (ownerType == OWNER_ITEM && ownerId < 0) {
+            return true;
+        }
+
+        if (variable == null || !variable.getPersistence().isPermanent() || !canPersistOwner(ownerType, ownerId)) {
             return false;
         }
 

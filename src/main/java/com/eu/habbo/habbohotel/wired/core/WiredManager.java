@@ -72,12 +72,16 @@ public final class WiredManager {
     public static final String CONFIG_ENABLED = "wired.engine.enabled";
     public static final String CONFIG_EXCLUSIVE = "wired.engine.exclusive";
     public static final String CONFIG_MAX_STEPS = "wired.engine.maxStepsPerStack";
+    public static final String CONFIG_MAX_EXECUTION_STEPS = "wired.engine.maxStepsPerExecution";
+    public static final String CONFIG_MAX_EVENTS_PER_WINDOW = "wired.engine.maxEventsPerWindow";
     public static final String CONFIG_DEBUG = "wired.engine.debug";
 
     // Defaults
     private static final boolean DEFAULT_ENABLED = false;
     private static final boolean DEFAULT_EXCLUSIVE = false;
     private static final int DEFAULT_MAX_STEPS = 100;
+    private static final int DEFAULT_MAX_EXECUTION_STEPS = 1000;
+    private static final int DEFAULT_MAX_EVENTS_PER_WINDOW = 1000;
 
     /** The singleton engine instance */
     private static volatile WiredEngine engine;
@@ -117,6 +121,10 @@ public final class WiredManager {
         // Load configuration
         boolean enabled = Emulator.getConfig().getBoolean(CONFIG_ENABLED, DEFAULT_ENABLED);
         int maxSteps = Emulator.getConfig().getInt(CONFIG_MAX_STEPS, DEFAULT_MAX_STEPS);
+        int maxExecutionSteps = Emulator.getConfig().getInt(CONFIG_MAX_EXECUTION_STEPS, DEFAULT_MAX_EXECUTION_STEPS);
+        WiredEngine.MAX_EVENTS_PER_WINDOW = Math.max(1, Emulator.getConfig().getInt(
+                CONFIG_MAX_EVENTS_PER_WINDOW,
+                DEFAULT_MAX_EVENTS_PER_WINDOW));
         boolean debug = Emulator.getConfig().getBoolean(CONFIG_DEBUG, false);
         
         // Load additional configuration
@@ -130,15 +138,15 @@ public final class WiredManager {
         // Create components
         stackIndex = new RoomWiredStackIndex();
         WiredServices services = DefaultWiredServices.getInstance();
-        engine = new WiredEngine(services, stackIndex, maxSteps);
+        engine = new WiredEngine(services, stackIndex, maxSteps, maxExecutionSteps);
         
         // Start the centralized tick service (50ms interval)
         WiredTickService.getInstance().start();
 
         initialized = true;
         
-        LOGGER.info("Wired Manager initialized - enabled: {}, maxSteps: {}, debug: {}", 
-                enabled, maxSteps, debug);
+        LOGGER.info("Wired Manager initialized - enabled: {}, maxSteps: {}, maxExecutionSteps: {}, debug: {}",
+                enabled, maxSteps, maxExecutionSteps, debug);
     }
 
     /**
@@ -203,6 +211,12 @@ public final class WiredManager {
 
     public static WiredUsageTracker getUsageTracker() {
         return usageTracker;
+    }
+
+    public static WiredState createExecutionState() {
+        return new WiredState(
+                Emulator.getConfig().getInt(CONFIG_MAX_STEPS, DEFAULT_MAX_STEPS),
+                Emulator.getConfig().getInt(CONFIG_MAX_EXECUTION_STEPS, DEFAULT_MAX_EXECUTION_STEPS));
     }
 
     // ========== Event Triggering Methods ==========
@@ -288,7 +302,7 @@ public final class WiredManager {
         int type = chatType == null ? RoomChatType.TALK.ordinal() : chatType.ordinal();
         int style = chatStyle == null ? RoomChatMessageBubbles.NORMAL.getType() : chatStyle.getType();
         WiredEvent event = WiredEvents.userSays(room, user, message, type, style);
-        WiredState state = new WiredState(Emulator.getConfig().getInt(CONFIG_MAX_STEPS, DEFAULT_MAX_STEPS));
+        WiredState state = createExecutionState();
         state.setContextValue("@event.chat.type", type);
         state.setContextValue("@event.chat.style", style);
 
@@ -547,7 +561,7 @@ public final class WiredManager {
             return false;
         }
 
-        WiredState state = new WiredState(Emulator.getConfig().getInt(CONFIG_MAX_STEPS, DEFAULT_MAX_STEPS));
+        WiredState state = createExecutionState();
         WiredMouseHoldManager.populateReleaseContext(state, room, holdState, releaseTarget);
         WiredEvent event = WiredEvent.builder(WiredEvent.Type.USER_RELEASES, room)
                 .actor(user)
@@ -575,7 +589,7 @@ public final class WiredManager {
 
         ChestTransactionFailure failure = ChestTransactionFailure.fromCodeOrText(reasonCode, reasonText);
         WiredState state = inheritedState == null
-                ? new WiredState(Emulator.getConfig().getInt(CONFIG_MAX_STEPS, DEFAULT_MAX_STEPS))
+                ? createExecutionState()
                 : inheritedState;
         state.setContextValue("@event.transaction_failed.reason", failure.getCode());
 
