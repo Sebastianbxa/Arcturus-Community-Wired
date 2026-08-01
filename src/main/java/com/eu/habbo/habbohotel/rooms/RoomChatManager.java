@@ -355,10 +355,6 @@ public class RoomChatManager {
             }
         }
 
-        if (prefixMessage == null) {
-            prefixMessage = roomChatMessage.getHabbo().getHabboInfo().getRank().hasPrefix()
-                ? new RoomUserNameChangedComposer(habbo, true).compose() : null;
-        }
         ServerMessage clearPrefixMessage =
             prefixMessage != null ? new RoomUserNameChangedComposer(habbo).compose() : null;
 
