@@ -15,14 +15,19 @@ import com.eu.habbo.habbohotel.wired.core.WiredSources;
 import com.eu.habbo.habbohotel.wired.core.WiredTriggerSourceResolver;
 import com.eu.habbo.messages.ServerMessage;
 import gnu.trove.set.hash.THashSet;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -42,6 +47,11 @@ import java.util.stream.Collectors;
 public class WiredSelectorRemoteSelection extends InteractionWiredSelector {
 
     public static final WiredSelectorType type = WiredSelectorType.REMOTE_SELECTION;
+    private static final Logger LOGGER = LoggerFactory.getLogger(WiredSelectorRemoteSelection.class);
+    private static final long CYCLE_WARNING_INTERVAL_MS = 10_000L;
+    private static final ThreadLocal<Set<Long>> ACTIVE_RESOLUTIONS =
+            ThreadLocal.withInitial(HashSet::new);
+    private static final Map<Long, Long> LAST_CYCLE_WARNINGS = new ConcurrentHashMap<>();
 
     private static final int TYPE_UNION        = 0;
     private static final int TYPE_INTERSECTION = 1;
@@ -110,6 +120,20 @@ public class WiredSelectorRemoteSelection extends InteractionWiredSelector {
     }
 
     private List<HabboItem> resolveRemoteItems(WiredEvent event) {
+        long resolutionKey = resolutionKey(false);
+        if (!beginResolution(resolutionKey)) {
+            warnCycle(resolutionKey, "furniture");
+            return Collections.emptyList();
+        }
+
+        try {
+            return resolveRemoteItemsGuarded(event);
+        } finally {
+            endResolution(resolutionKey);
+        }
+    }
+
+    private List<HabboItem> resolveRemoteItemsGuarded(WiredEvent event) {
         Room room = Emulator.getGameEnvironment().getRoomManager().getRoom(this.getRoomId());
         if (room == null) return Collections.emptyList();
 
@@ -134,6 +158,20 @@ public class WiredSelectorRemoteSelection extends InteractionWiredSelector {
     }
 
     private List<RoomUnit> resolveRemoteUsers(WiredEvent event) {
+        long resolutionKey = resolutionKey(true);
+        if (!beginResolution(resolutionKey)) {
+            warnCycle(resolutionKey, "user");
+            return Collections.emptyList();
+        }
+
+        try {
+            return resolveRemoteUsersGuarded(event);
+        } finally {
+            endResolution(resolutionKey);
+        }
+    }
+
+    private List<RoomUnit> resolveRemoteUsersGuarded(WiredEvent event) {
         Room room = Emulator.getGameEnvironment().getRoomManager().getRoom(this.getRoomId());
         if (room == null) return Collections.emptyList();
 
@@ -155,6 +193,34 @@ public class WiredSelectorRemoteSelection extends InteractionWiredSelector {
         }
 
         return mergeUsers(allSets);
+    }
+
+    private long resolutionKey(boolean users) {
+        return (((long) this.getId()) << 1) ^ (users ? 1L : 0L);
+    }
+
+    private static boolean beginResolution(long resolutionKey) {
+        return ACTIVE_RESOLUTIONS.get().add(resolutionKey);
+    }
+
+    private static void endResolution(long resolutionKey) {
+        Set<Long> active = ACTIVE_RESOLUTIONS.get();
+        active.remove(resolutionKey);
+        if (active.isEmpty()) {
+            ACTIVE_RESOLUTIONS.remove();
+        }
+    }
+
+    private void warnCycle(long resolutionKey, String selectionKind) {
+        long now = System.currentTimeMillis();
+        Long previous = LAST_CYCLE_WARNINGS.put(resolutionKey, now);
+        if (previous == null || now - previous >= CYCLE_WARNING_INTERVAL_MS) {
+            LOGGER.warn(
+                    "Blocked cyclic remote selector {} resolution at item {} in room {}",
+                    selectionKind,
+                    this.getId(),
+                    this.getRoomId());
+        }
     }
 
     private List<HabboItem> mergeItems(List<Set<HabboItem>> allSets) {
@@ -256,6 +322,8 @@ public class WiredSelectorRemoteSelection extends InteractionWiredSelector {
 
     @Override
     public void onPickUp() {
+        LAST_CYCLE_WARNINGS.remove(this.resolutionKey(false));
+        LAST_CYCLE_WARNINGS.remove(this.resolutionKey(true));
         this.refItems.clear();
         this.resetSelectorOptions();
         this.selectionType = TYPE_UNION;

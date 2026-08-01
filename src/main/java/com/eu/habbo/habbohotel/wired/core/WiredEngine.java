@@ -87,7 +87,7 @@ public final class WiredEngine {
     public static int MAX_RECURSION_DEPTH = 10;
     
     /** Maximum events of same type per room within rate limit window before banning */
-    public static int MAX_EVENTS_PER_WINDOW = 100;
+    public static int MAX_EVENTS_PER_WINDOW = 1000;
     
     /** Time window for counting rapid events (milliseconds) */
     public static long RATE_LIMIT_WINDOW_MS = 10000;
@@ -98,6 +98,7 @@ public final class WiredEngine {
     private final WiredServices services;
     private final WiredStackIndex index;
     private final int maxStepsPerStack;
+    private final int maxStepsPerExecution;
     
     /** Track unseen effect indices per room+tile for round-robin selection */
     private final ConcurrentHashMap<String, Integer> unseenIndices;
@@ -119,13 +120,19 @@ public final class WiredEngine {
      * @param maxStepsPerStack maximum steps per stack execution (loop protection)
      */
     public WiredEngine(WiredServices services, WiredStackIndex index, int maxStepsPerStack) {
+        this(services, index, maxStepsPerStack, WiredState.defaultExecutionStepLimit(maxStepsPerStack));
+    }
+
+    public WiredEngine(WiredServices services, WiredStackIndex index, int maxStepsPerStack, int maxStepsPerExecution) {
         if (services == null) throw new IllegalArgumentException("Services cannot be null");
         if (index == null) throw new IllegalArgumentException("Index cannot be null");
         if (maxStepsPerStack <= 0) throw new IllegalArgumentException("Max steps must be positive");
+        if (maxStepsPerExecution <= 0) throw new IllegalArgumentException("Max execution steps must be positive");
         
         this.services = services;
         this.index = index;
         this.maxStepsPerStack = maxStepsPerStack;
+        this.maxStepsPerExecution = maxStepsPerExecution;
         this.unseenIndices = new ConcurrentHashMap<>();
         this.roomRecursionDepth = ThreadLocal.withInitial(HashMap::new);
         this.eventRateLimiters = new ConcurrentHashMap<>();
@@ -224,6 +231,7 @@ public final class WiredEngine {
         boolean anyTriggered = false;
         long currentTime = System.currentTimeMillis();
         UUID eventRunId = UUID.randomUUID();
+        WiredState eventState = createEventState(inheritedState, eventRunId);
         List<PreparedStack> preparedStacks = new ArrayList<>();
         room.beginComposerBatch();
         room.getTileManager().beginUpdateBatch();
@@ -234,7 +242,7 @@ public final class WiredEngine {
                             stack,
                             event,
                             currentTime,
-                            createStackState(inheritedState, eventRunId));
+                            eventState.fork(eventRunId));
                     if (prepared != null) {
                         preparedStacks.add(prepared);
                         anyTriggered = true;
@@ -265,9 +273,9 @@ public final class WiredEngine {
         return anyTriggered;
     }
 
-    private WiredState createStackState(WiredState inheritedState, UUID eventRunId) {
+    private WiredState createEventState(WiredState inheritedState, UUID eventRunId) {
         return inheritedState == null
-                ? new WiredState(maxStepsPerStack, eventRunId)
+                ? new WiredState(maxStepsPerStack, maxStepsPerExecution, eventRunId)
                 : inheritedState.fork(eventRunId);
     }
 
@@ -288,8 +296,7 @@ public final class WiredEngine {
             return null;
         }
 
-        WiredExtraExecutionLimit executionLimit = stack.extra(WiredExtraExecutionLimit.class);
-        if (executionLimit != null && !executionLimit.allowExecution(currentTime)) {
+        if (!WiredExtraExecutionLimit.allowExecution(stack, currentTime)) {
             debug(room, "Execution limit blocked stack at item {}", stack.triggerItem() != null ? stack.triggerItem().getId() : "null");
             return null;
         }

@@ -228,7 +228,11 @@ public final class RoomWiredStackIndex implements WiredStackIndex {
             return Collections.emptyList();
         }
 
-        return new ArrayList<>(rawExtras);
+        List<InteractionWiredExtra> extras = new ArrayList<>(rawExtras);
+        extras.sort(Comparator
+                .comparingDouble(InteractionWiredExtra::getZ)
+                .thenComparingInt(InteractionWiredExtra::getId));
+        return extras;
     }
 
     /**

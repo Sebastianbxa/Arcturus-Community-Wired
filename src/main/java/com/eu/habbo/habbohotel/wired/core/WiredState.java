@@ -5,6 +5,8 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Tracks execution state for a wired stack run, providing loop safety and metadata.
@@ -29,12 +31,13 @@ import java.util.UUID;
  */
 public final class WiredState {
     
+    /** Stable ID for the complete execution lineage, including signals and delays. */
     private final UUID runId;
+    /** ID for one event/mutation batch within the execution lineage. */
+    private final UUID batchId;
     private final int maxSteps;
     private int steps = 0;
-    private long startTimeMs;
-    private boolean aborted = false;
-    private String abortReason;
+    private final ExecutionBudget executionBudget;
 
     // Per-execution context variable storage.
     // Context variables live only for the duration of this signal execution.
@@ -51,13 +54,34 @@ public final class WiredState {
      * @param maxSteps maximum number of steps allowed (triggers, conditions, effects)
      */
     public WiredState(int maxSteps) {
-        this(maxSteps, UUID.randomUUID());
+        this(maxSteps, defaultExecutionStepLimit(maxSteps), UUID.randomUUID());
+    }
+
+    public WiredState(int maxSteps, int maxExecutionSteps) {
+        this(maxSteps, maxExecutionSteps, UUID.randomUUID());
     }
 
     WiredState(int maxSteps, UUID runId) {
-        this.runId = runId == null ? UUID.randomUUID() : runId;
+        this(maxSteps, defaultExecutionStepLimit(maxSteps), runId);
+    }
+
+    WiredState(int maxSteps, int maxExecutionSteps, UUID runId) {
+        if (maxSteps <= 0 || maxExecutionSteps <= 0) {
+            throw new IllegalArgumentException("Wired step limits must be positive");
+        }
+
+        UUID normalizedRunId = runId == null ? UUID.randomUUID() : runId;
+        this.runId = normalizedRunId;
+        this.batchId = normalizedRunId;
         this.maxSteps = maxSteps;
-        this.startTimeMs = System.currentTimeMillis();
+        this.executionBudget = new ExecutionBudget(maxExecutionSteps);
+    }
+
+    private WiredState(int maxSteps, UUID runId, UUID batchId, ExecutionBudget executionBudget) {
+        this.runId = runId;
+        this.batchId = batchId;
+        this.maxSteps = maxSteps;
+        this.executionBudget = executionBudget;
     }
 
     /**
@@ -67,6 +91,14 @@ public final class WiredState {
      */
     public UUID runId() {
         return runId;
+    }
+
+    /**
+     * Identifies the current event/movement batch. Unlike {@link #runId()}, this
+     * changes when execution crosses a signal, delayed effect, or event boundary.
+     */
+    public UUID batchId() {
+        return batchId;
     }
 
     /**
@@ -85,12 +117,20 @@ public final class WiredState {
         return maxSteps;
     }
 
+    public int executionSteps() {
+        return this.executionBudget.steps();
+    }
+
+    public int maxExecutionSteps() {
+        return this.executionBudget.maxSteps();
+    }
+
     /**
      * Get the time when this execution started.
      * @return start time in milliseconds since epoch
      */
     public long startTimeMs() {
-        return startTimeMs;
+        return this.executionBudget.startTimeMs();
     }
 
     /**
@@ -98,7 +138,7 @@ public final class WiredState {
      * @return elapsed time in milliseconds
      */
     public long elapsedMs() {
-        return System.currentTimeMillis() - startTimeMs;
+        return System.currentTimeMillis() - this.executionBudget.startTimeMs();
     }
 
     /**
@@ -106,7 +146,7 @@ public final class WiredState {
      * @return true if aborted
      */
     public boolean isAborted() {
-        return aborted;
+        return this.executionBudget.isAborted();
     }
 
     /**
@@ -114,7 +154,7 @@ public final class WiredState {
      * @return the abort reason, or null if not aborted
      */
     public String abortReason() {
-        return abortReason;
+        return this.executionBudget.abortReason();
     }
 
     /**
@@ -124,8 +164,8 @@ public final class WiredState {
      * @throws WiredLimitException if the step limit has been exceeded
      */
     public void step() {
-        if (aborted) {
-            throw new WiredLimitException("Wired execution was aborted: " + abortReason);
+        if (this.executionBudget.isAborted()) {
+            throw new WiredLimitException("Wired execution was aborted: " + this.executionBudget.abortReason());
         }
         
         steps++;
@@ -134,6 +174,8 @@ public final class WiredState {
                     "Wired execution exceeded max steps: " + maxSteps + 
                     " (runId: " + runId + ")");
         }
+
+        this.executionBudget.step(this.runId);
     }
 
     /**
@@ -141,7 +183,7 @@ public final class WiredState {
      * @return true if more steps are allowed
      */
     public boolean canStep() {
-        return !aborted && steps < maxSteps;
+        return steps < maxSteps && this.executionBudget.canStep();
     }
 
     /**
@@ -149,7 +191,13 @@ public final class WiredState {
      * @return number of remaining steps
      */
     public int remainingSteps() {
-        return Math.max(0, maxSteps - steps);
+        return Math.min(
+                Math.max(0, maxSteps - steps),
+                this.executionBudget.remainingSteps());
+    }
+
+    public int remainingExecutionSteps() {
+        return this.executionBudget.remainingSteps();
     }
 
     /**
@@ -158,8 +206,7 @@ public final class WiredState {
      * @param reason the reason for aborting
      */
     public void abort(String reason) {
-        this.aborted = true;
-        this.abortReason = reason;
+        this.executionBudget.abort(reason);
     }
 
     /**
@@ -168,9 +215,7 @@ public final class WiredState {
      */
     public void reset() {
         this.steps = 0;
-        this.aborted = false;
-        this.abortReason = null;
-        this.startTimeMs = System.currentTimeMillis();
+        this.executionBudget.reset();
     }
 
     // =========== Context Variable Access ===========
@@ -325,10 +370,21 @@ public final class WiredState {
     }
 
     WiredState fork(UUID sharedRunId) {
-        WiredState forked = new WiredState(this.maxSteps, sharedRunId);
+        UUID forkBatchId = sharedRunId == null ? UUID.randomUUID() : sharedRunId;
+        WiredState forked = new WiredState(
+                this.maxSteps,
+                this.runId,
+                forkBatchId,
+                this.executionBudget);
         forked.setContextScope(this.contextScopeKey);
         forked.importScopedContextValues(this.scopedContextValuesSnapshot(), true);
         return forked;
+    }
+
+    static int defaultExecutionStepLimit(int maxSteps) {
+        return (int) Math.min(
+                Integer.MAX_VALUE,
+                Math.max((long) maxSteps, (long) maxSteps * 10L));
     }
 
     private Map<String, Long> scopedValues() {
@@ -351,9 +407,70 @@ public final class WiredState {
     public String toString() {
         return "WiredState{" +
                 "runId=" + runId +
+                ", batchId=" + batchId +
                 ", steps=" + steps + "/" + maxSteps +
+                ", executionSteps=" + this.executionBudget.steps() + "/" + this.executionBudget.maxSteps() +
                 ", elapsed=" + elapsedMs() + "ms" +
-                (aborted ? ", ABORTED: " + abortReason : "") +
+                (this.executionBudget.isAborted() ? ", ABORTED: " + this.executionBudget.abortReason() : "") +
                 '}';
+    }
+
+    private static final class ExecutionBudget {
+        private final int maxSteps;
+        private final AtomicInteger steps = new AtomicInteger();
+        private final AtomicReference<String> abortReason = new AtomicReference<>();
+        private volatile long startTimeMs = System.currentTimeMillis();
+
+        private ExecutionBudget(int maxSteps) {
+            this.maxSteps = maxSteps;
+        }
+
+        private void step(UUID runId) {
+            int currentSteps = this.steps.incrementAndGet();
+            if (currentSteps > this.maxSteps) {
+                String reason = "Wired execution exceeded max lineage steps: " + this.maxSteps
+                        + " (runId: " + runId + ")";
+                this.abortReason.compareAndSet(null, reason);
+                throw new WiredLimitException(reason);
+            }
+        }
+
+        private int steps() {
+            return this.steps.get();
+        }
+
+        private int maxSteps() {
+            return this.maxSteps;
+        }
+
+        private boolean canStep() {
+            return !this.isAborted() && this.steps.get() < this.maxSteps;
+        }
+
+        private int remainingSteps() {
+            return Math.max(0, this.maxSteps - this.steps.get());
+        }
+
+        private long startTimeMs() {
+            return this.startTimeMs;
+        }
+
+        private boolean isAborted() {
+            return this.abortReason.get() != null;
+        }
+
+        private String abortReason() {
+            return this.abortReason.get();
+        }
+
+        private void abort(String reason) {
+            this.abortReason.compareAndSet(null, reason == null ? "Aborted" : reason);
+        }
+
+        private void reset() {
+            this.steps.set(0);
+            this.abortReason.set(null);
+            this.startTimeMs = System.currentTimeMillis();
+        }
     }
 }

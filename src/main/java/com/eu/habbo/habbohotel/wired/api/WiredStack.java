@@ -3,6 +3,7 @@ package com.eu.habbo.habbohotel.wired.api;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredExtra;
 import com.eu.habbo.habbohotel.users.HabboItem;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -146,6 +147,25 @@ public final class WiredStack {
             }
         }
         return null;
+    }
+
+    /**
+     * Returns every extra of the requested type in deterministic stack order.
+     * Use this for additive extras; {@link #extra(Class)} is intended for
+     * singleton/flag-style modifiers.
+     */
+    public <T extends InteractionWiredExtra> List<T> extras(Class<T> type) {
+        if (type == null || this.extras.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<T> matching = new ArrayList<>();
+        for (InteractionWiredExtra extra : this.extras) {
+            if (type.isAssignableFrom(extra.getClass())) {
+                matching.add(type.cast(extra));
+            }
+        }
+        return Collections.unmodifiableList(matching);
     }
 
     /**

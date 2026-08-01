@@ -293,7 +293,7 @@ public class WiredEffectSendSignalNegative extends InteractionWiredEffect {
                 builder.build(),
                 this,
                 DefaultWiredServices.getInstance(),
-                new WiredState(Emulator.getConfig().getInt(WiredManager.CONFIG_MAX_STEPS, 100)),
+                WiredManager.createExecutionState(),
                 stuff
         );
     }

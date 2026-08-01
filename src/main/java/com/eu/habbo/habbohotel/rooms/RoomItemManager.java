@@ -22,6 +22,7 @@ import com.eu.habbo.habbohotel.items.interactions.pets.InteractionPetTree;
 import com.eu.habbo.habbohotel.items.interactions.wired.effects.WiredEffectPlaceTempFurni;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredBlob;
 import com.eu.habbo.habbohotel.items.interactions.wired.extra.WiredExtraCarryAvatar;
+import com.eu.habbo.habbohotel.items.interactions.wired.variables.WiredVariableFurni;
 import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.habbohotel.users.HabboInfo;
 import com.eu.habbo.habbohotel.users.HabboItem;
@@ -1546,6 +1547,13 @@ public class RoomItemManager {
                 : this.room.getLayout().getTilesAt(tile, item.getBaseItem().getWidth(), item.getBaseItem().getLength(), item.getRotation());
 
         this.removeHabboItem(item);
+        if (this.room.getRoomSpecialTypes() != null) {
+            for (InteractionWiredVariable variable : this.room.getRoomSpecialTypes().getVariables()) {
+                if (variable instanceof WiredVariableFurni) {
+                    variable.removeValue(item.getId());
+                }
+            }
+        }
         item.onPickUp(this.room);
         item.setRoomId(0);
         this.room.sendComposer(new RemoveFloorItemComposer(item, true).compose());

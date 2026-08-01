@@ -163,20 +163,20 @@ public final class WiredMovement {
     public static void beginFurniMutationBatch(WiredContext ctx) {
         if (ctx == null || ctx.state() == null) return;
 
-        FurniMutationBatch batch = pendingFurniMutations.computeIfAbsent(ctx.state().runId(), id -> new FurniMutationBatch());
+        FurniMutationBatch batch = pendingFurniMutations.computeIfAbsent(ctx.state().batchId(), id -> new FurniMutationBatch());
         synchronized (batch) {
             batch.depth++;
         }
     }
 
     public static boolean hasFurniMutationBatch(WiredContext ctx) {
-        return ctx != null && ctx.state() != null && pendingFurniMutations.containsKey(ctx.state().runId());
+        return ctx != null && ctx.state() != null && pendingFurniMutations.containsKey(ctx.state().batchId());
     }
 
     public static boolean queueMovement(WiredContext ctx, WiredMovementsComposer.MovementData movement) {
         if (ctx == null || ctx.state() == null || movement == null) return false;
 
-        FurniMutationBatch batch = pendingFurniMutations.get(ctx.state().runId());
+        FurniMutationBatch batch = pendingFurniMutations.get(ctx.state().batchId());
         if (batch == null) return false;
 
         synchronized (batch) {
@@ -197,7 +197,7 @@ public final class WiredMovement {
     public static boolean queueFurniPosition(WiredContext ctx, HabboItem item, boolean xAxis, long value) {
         if (ctx == null || ctx.state() == null || item == null) return false;
 
-        FurniMutationBatch batch = pendingFurniMutations.get(ctx.state().runId());
+        FurniMutationBatch batch = pendingFurniMutations.get(ctx.state().batchId());
         if (batch == null) return false;
 
         synchronized (batch) {
@@ -213,7 +213,7 @@ public final class WiredMovement {
     public static Long getPendingFurniPosition(WiredContext ctx, HabboItem item, boolean xAxis) {
         if (ctx == null || ctx.state() == null || item == null) return null;
 
-        FurniMutationBatch batch = pendingFurniMutations.get(ctx.state().runId());
+        FurniMutationBatch batch = pendingFurniMutations.get(ctx.state().batchId());
         if (batch == null) return null;
 
         synchronized (batch) {
@@ -305,7 +305,7 @@ public final class WiredMovement {
 
     private static PendingFurniMutation getOrCreatePendingMutation(WiredContext ctx, HabboItem item) {
         if (ctx == null || ctx.state() == null || item == null) return null;
-        FurniMutationBatch batch = pendingFurniMutations.get(ctx.state().runId());
+        FurniMutationBatch batch = pendingFurniMutations.get(ctx.state().batchId());
         if (batch == null) return null;
         synchronized (batch) {
             PendingFurniMutation mutation = batch.mutations.computeIfAbsent(item.getId(), id -> new PendingFurniMutation(ctx, item));
@@ -316,7 +316,7 @@ public final class WiredMovement {
 
     private static PendingFurniMutation getPendingMutation(WiredContext ctx, HabboItem item) {
         if (ctx == null || ctx.state() == null || item == null) return null;
-        FurniMutationBatch batch = pendingFurniMutations.get(ctx.state().runId());
+        FurniMutationBatch batch = pendingFurniMutations.get(ctx.state().batchId());
         if (batch == null) return null;
         synchronized (batch) {
             return batch.mutations.get(item.getId());
@@ -326,8 +326,8 @@ public final class WiredMovement {
     public static void endFurniMutationBatch(WiredContext ctx) {
         if (ctx == null || ctx.state() == null) return;
 
-        UUID runId = ctx.state().runId();
-        FurniMutationBatch batch = pendingFurniMutations.get(runId);
+        UUID batchId = ctx.state().batchId();
+        FurniMutationBatch batch = pendingFurniMutations.get(batchId);
         if (batch == null) return;
 
         Map<Integer, PendingFurniMutation> mutations = null;
@@ -339,7 +339,7 @@ public final class WiredMovement {
                 queuedMovements = new ArrayList<>(batch.movements);
                 batch.mutations.clear();
                 batch.movements.clear();
-                pendingFurniMutations.remove(runId, batch);
+                pendingFurniMutations.remove(batchId, batch);
             }
         }
 
@@ -405,7 +405,7 @@ public final class WiredMovement {
         if (!movementUpdates.isEmpty() && ctx.room() != null) {
             ctx.room().sendComposer(new WiredMovementsComposer(movementUpdates).compose());
         }
-        pendingFurniAltitudeOrigins.remove(runId);
+        pendingFurniAltitudeOrigins.remove(batchId);
     }
 
     public static boolean moveFurni(WiredContext ctx, HabboItem item, RoomTile targetTile, int rotation, MoveOptions options) {
@@ -766,7 +766,7 @@ public final class WiredMovement {
         }
 
         pendingFurniAltitudeOrigins
-                .computeIfAbsent(ctx.state().runId(), id -> new ConcurrentHashMap<>())
+                .computeIfAbsent(ctx.state().batchId(), id -> new ConcurrentHashMap<>())
                 .putIfAbsent(item.getId(), oldZ);
     }
 
@@ -775,14 +775,14 @@ public final class WiredMovement {
             return fallbackZ;
         }
 
-        Map<Integer, Double> origins = pendingFurniAltitudeOrigins.get(ctx.state().runId());
+        Map<Integer, Double> origins = pendingFurniAltitudeOrigins.get(ctx.state().batchId());
         if (origins == null) {
             return fallbackZ;
         }
 
         Double oldZ = origins.remove(item.getId());
         if (origins.isEmpty()) {
-            pendingFurniAltitudeOrigins.remove(ctx.state().runId(), origins);
+            pendingFurniAltitudeOrigins.remove(ctx.state().batchId(), origins);
         }
 
         return oldZ == null ? fallbackZ : oldZ;
