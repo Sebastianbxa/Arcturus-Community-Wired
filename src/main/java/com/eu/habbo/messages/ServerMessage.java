@@ -45,6 +45,18 @@ public class ServerMessage {
         return this;
     }
 
+    public int debugWriterIndex() {
+        return this.channelBuffer.writerIndex();
+    }
+
+    public String debugHexRange(int start, int end) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = start; i < end; i++) {
+            sb.append(String.format("%02X ", this.channelBuffer.getByte(i)));
+        }
+        return sb.toString();
+    }
+
     public void appendRawBytes(byte[] bytes) {
         try {
             this.stream.write(bytes);
