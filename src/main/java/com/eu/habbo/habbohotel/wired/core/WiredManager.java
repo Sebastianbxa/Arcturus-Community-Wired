@@ -251,7 +251,7 @@ public final class WiredManager {
 
             InteractionOneWayGate.commitPendingEntryFromStackedWalkOn(user);
         }
-
+
         Map<Integer, String> statesAtWalkStart = user.getWiredWalkStartItemStatesSnapshot();
         WiredEvent event = WiredEvents.userWalksOn(room, user, item, statesAtWalkStart);
         return handleEvent(event);
@@ -446,11 +446,19 @@ public final class WiredManager {
      * Trigger bot collision.
      */
     public static boolean triggerBotCollision(Room room, RoomUnit botUnit) {
+        return triggerBotCollision(room, botUnit, null);
+    }
+
+    /**
+     * Trigger a bot collision, tagging which furni caused it so conditions
+     * that read the event's source item (e.g. Furni Type Matches) can evaluate.
+     */
+    public static boolean triggerBotCollision(Room room, RoomUnit botUnit, HabboItem sourceItem) {
         if (!isEnabled() || room == null || botUnit == null) {
             return false;
         }
-        
-        WiredEvent event = WiredEvents.botCollision(room, botUnit);
+
+        WiredEvent event = WiredEvents.botCollision(room, botUnit, sourceItem);
         return handleEvent(event);
     }
 

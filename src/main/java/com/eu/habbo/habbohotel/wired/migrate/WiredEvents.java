@@ -296,9 +296,24 @@ public final class WiredEvents {
      * @return the event
      */
     public static WiredEvent botCollision(Room room, RoomUnit botUnit) {
+        return botCollision(room, botUnit, null);
+    }
+
+    /**
+     * Create an event for a bot collision, tagging which furni caused it.
+     * Needed so conditions like "Furni Type Matches" (which read
+     * {@link WiredEvent#getSourceItem()}) can evaluate against the specific
+     * item that was collided with instead of always seeing an empty source.
+     * @param room the room
+     * @param botUnit the bot's room unit
+     * @param sourceItem the furni that caused the collision, nullable
+     * @return the event
+     */
+    public static WiredEvent botCollision(Room room, RoomUnit botUnit, HabboItem sourceItem) {
         return WiredEvent.builder(WiredEvent.Type.BOT_COLLISION, room)
                 .actor(botUnit)
                 .tile(botUnit.getCurrentLocation())
+                .sourceItem(sourceItem)
                 .build();
     }
 

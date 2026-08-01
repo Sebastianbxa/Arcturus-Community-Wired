@@ -360,6 +360,7 @@ public class ItemManager {
         this.interactionsList.add(new ItemInteraction("wf_act_unfreeze", WiredEffectUnfreezeAvatar.class));
         this.interactionsList.add(new ItemInteraction("wf_act_click_conf", WiredEffectSetClickConfig.class));
         this.interactionsList.add(new ItemInteraction("wf_act_kick_user", WiredEffectKickAvatar.class));
+        this.interactionsList.add(new ItemInteraction("wf_act_mute_triggerer", WiredEffectMuteTriggerer.class));
         this.interactionsList.add(new ItemInteraction("wf_act_bot_give_handitem", WiredEffectBotGiveHandItem.class));
         this.interactionsList.add(new ItemInteraction("wf_act_bot_move", WiredEffectBotWalkToFurni.class));
         this.interactionsList.add(new ItemInteraction("wf_act_bot_teleport", WiredEffectBotTeleportToFurni.class));
@@ -409,7 +410,9 @@ public class ItemManager {
         this.interactionsList.add(new ItemInteraction("wf_cnd_match_time", WiredConditionTimeMatches.class));
         this.interactionsList.add(new ItemInteraction("wf_cnd_match_date", WiredConditionDateMatches.class));
         this.interactionsList.add(new ItemInteraction("wf_cnd_user_count_in", WiredConditionAvatarCountInRoom.class));
-        
+        this.interactionsList.add(new ItemInteraction("wf_cnd_wears_effect_v2", WiredConditionWearsEffect.class));
+        this.interactionsList.add(new ItemInteraction("wf_cnd_habbo_owns_badge_v2", WiredConditionHabboOwnsBadge.class));
+
 
         this.interactionsList.add(new ItemInteraction("wf_cnd_has_var", WiredConditionHasVariable.class));
         this.interactionsList.add(new ItemInteraction("wf_cnd_var_val_match", WiredConditionVariableValue.class));
@@ -431,6 +434,8 @@ public class ItemManager {
         this.interactionsList.add(new ItemInteraction("wf_cnd_not_in_team", WiredConditionNotAvatarOnTeam.class));
         this.interactionsList.add(new ItemInteraction("wf_cnd_not_user_count", WiredConditionNotAvatarCountInRoom.class));
         this.interactionsList.add(new ItemInteraction("wf_cnd_neg_has_var", WiredConditionNotHasVariable.class));
+        this.interactionsList.add(new ItemInteraction("wf_cnd_not_wears_effect_v2", WiredConditionNotWearsEffect.class));
+        this.interactionsList.add(new ItemInteraction("wf_cnd_not_habbo_owns_badge_v2", WiredConditionNotHabboOwnsBadge.class));
 
 
 

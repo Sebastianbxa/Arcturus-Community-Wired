@@ -23,6 +23,8 @@ public enum WiredConditionType {
     TIME_MATCHES(19),
     DATE_MATCHES(20),
     AVATAR_COUNT_IN_ROOM(21),
+    ACTOR_WEARS_EFFECT(22),
+    ACTOR_WEARS_BADGE(23),
     CHEST_HAS_ITEMS(45),
     CHEST_HAS_FURNI_TYPE(46),
 
@@ -46,7 +48,9 @@ public enum WiredConditionType {
     NOT_FURNI_MATCHES(58),
     NOT_AVATAR_IN_TEAM(59),
     NOT_AVATAR_COUNT_IN_ROOM(60),
-    NOT_HAS_VARIABLE(61);
+    NOT_HAS_VARIABLE(61),
+    NOT_ACTOR_WEARS_EFFECT(62),
+    NOT_ACTOR_WEARS_BADGE(63);
 
 
     public final int code;
