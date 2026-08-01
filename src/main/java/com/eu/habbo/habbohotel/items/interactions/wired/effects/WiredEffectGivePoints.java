@@ -7,15 +7,18 @@ import com.eu.habbo.habbohotel.games.GameState;
 import com.eu.habbo.habbohotel.games.GameTeam;
 import com.eu.habbo.habbohotel.items.Item;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredEffect;
+import com.eu.habbo.habbohotel.items.interactions.InteractionWiredHighscore;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredTrigger;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettings;
 import com.eu.habbo.habbohotel.items.interactions.wired.utils.WiredTeamScoreHelper;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
 import com.eu.habbo.habbohotel.users.Habbo;
+import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.habbohotel.wired.WiredEffectType;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.core.WiredContext;
+import com.eu.habbo.habbohotel.wired.highscores.WiredHighscoreDataEntry;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.wired.WiredSaveException;
 import gnu.trove.procedure.TObjectProcedure;
@@ -23,6 +26,7 @@ import gnu.trove.procedure.TObjectProcedure;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 public class WiredEffectGivePoints extends InteractionWiredEffect {
@@ -48,7 +52,9 @@ public class WiredEffectGivePoints extends InteractionWiredEffect {
         for (RoomUnit roomUnit : this.resolveSourceUsers(ctx)) {
             Habbo habbo = room.getHabbo(roomUnit);
 
-            if (habbo != null && habbo.getHabboInfo().getCurrentGame() != null) {
+            if (habbo == null) continue;
+
+            if (habbo.getHabboInfo().getCurrentGame() != null) {
                 Game game = room.getGame(habbo.getHabboInfo().getCurrentGame());
 
                 if (game == null || !game.state.equals(GameState.RUNNING))
@@ -59,7 +65,33 @@ public class WiredEffectGivePoints extends InteractionWiredEffect {
                 if (team != null) {
                     this.addTeamScore(room, game, team);
                 }
+            } else {
+                // Sala sin Game formal (armada 100% con wired, sin
+                // BattleBanzai/FreezeTag de por medio): GamePlayer nunca
+                // existe, asi que no hay a quien sumarle el puntaje ni
+                // Game.onEnd() que lo postee a un Marcador. Se postea
+                // directo, mismo mecanismo que WiredEffectGiveScoreRoom.
+                this.postDirectlyToMarkers(room, habbo);
             }
+        }
+    }
+
+    private void postDirectlyToMarkers(Room room, Habbo habbo) {
+        List<HabboItem> markers = new ArrayList<>(room.getRoomSpecialTypes().getItemsOfType(InteractionWiredHighscore.class));
+        if (markers.isEmpty()) return;
+
+        int delta = this.operation == OPERATION_REMOVE ? -this.score : this.score;
+        int userId = habbo.getHabboInfo().getId();
+
+        for (HabboItem marker : markers) {
+            Emulator.getGameEnvironment().getItemManager().getHighscoreManager().addHighscoreData(
+                    new WiredHighscoreDataEntry(marker.getId(), Collections.singletonList(userId), delta, false, Emulator.getIntUnixTimestamp())
+            );
+        }
+
+        for (HabboItem marker : markers) {
+            ((InteractionWiredHighscore) marker).reloadData();
+            room.updateItem(marker);
         }
     }
 

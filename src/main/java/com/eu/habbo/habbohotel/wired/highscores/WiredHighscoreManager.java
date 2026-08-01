@@ -145,7 +145,17 @@ public class WiredHighscoreManager {
                 .map(this::createHighscoreRow);
 
         if (scoreType == WiredHighscoreScoreType.CLASSIC) {
-            return highscores.sorted(WiredHighscoreRow::compareTo).collect(Collectors.toList());
+            return highscores
+                    .collect(Collectors.groupingBy(h -> h.getUsers().hashCode()))
+                    .values()
+                    .stream()
+                    .map(group -> {
+                        WiredHighscoreRow latest = group.get(group.size() - 1);
+                        int total = group.stream().mapToInt(WiredHighscoreRow::getValue).sum();
+                        return new WiredHighscoreRow(latest.getUsers(), latest.getLooks(), latest.getUserIds(), total);
+                    })
+                    .sorted(WiredHighscoreRow::compareTo)
+                    .collect(Collectors.toList());
         }
 
         if (scoreType == WiredHighscoreScoreType.PERTEAM) {

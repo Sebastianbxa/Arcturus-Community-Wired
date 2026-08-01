@@ -8,18 +8,25 @@ import com.eu.habbo.habbohotel.games.GameTeam;
 import com.eu.habbo.habbohotel.games.GameTeamColors;
 import com.eu.habbo.habbohotel.items.Item;
 import com.eu.habbo.habbohotel.items.interactions.InteractionWiredEffect;
+import com.eu.habbo.habbohotel.items.interactions.InteractionWiredHighscore;
 import com.eu.habbo.habbohotel.items.interactions.wired.WiredSettings;
 import com.eu.habbo.habbohotel.items.interactions.wired.utils.WiredTeamScoreHelper;
 import com.eu.habbo.habbohotel.rooms.Room;
 import com.eu.habbo.habbohotel.rooms.RoomUnit;
+import com.eu.habbo.habbohotel.users.Habbo;
+import com.eu.habbo.habbohotel.users.HabboItem;
 import com.eu.habbo.habbohotel.wired.WiredEffectType;
 import com.eu.habbo.habbohotel.wired.core.WiredManager;
 import com.eu.habbo.habbohotel.wired.core.WiredContext;
+import com.eu.habbo.habbohotel.wired.highscores.WiredHighscoreDataEntry;
 import com.eu.habbo.messages.ServerMessage;
 import com.eu.habbo.messages.incoming.wired.WiredSaveException;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 public class WiredEffectGivePointsToTeam extends InteractionWiredEffect {
     public static final WiredEffectType type = WiredEffectType.GIVE_PREDEFINED_POINTS;
@@ -42,14 +49,47 @@ public class WiredEffectGivePointsToTeam extends InteractionWiredEffect {
     @Override
     public void execute(WiredContext ctx) {
         Room room = ctx.room();
+        boolean anyRunningGame = false;
+
         for (Game game : room.getGames()) {
             if (game != null && game.state.equals(GameState.RUNNING)) {
+                anyRunningGame = true;
                 GameTeam team = game.getTeam(this.teamColor);
 
                 if (team != null) {
                     this.addTeamScore(room, game, team);
                 }
             }
+        }
+
+        // Sala sin Game formal: "equipo predefinido" no tiene sentido sin un
+        // Game que sepa quien esta en cada equipo, asi que no hay a quien
+        // sumarle el puntaje. Se lo damos al actor que disparo el efecto y se
+        // postea directo al Marcador -- mismo respaldo que WiredEffectGivePoints.
+        if (!anyRunningGame) {
+            ctx.actor().ifPresent(roomUnit -> {
+                Habbo habbo = room.getHabbo(roomUnit);
+                if (habbo != null) this.postDirectlyToMarkers(room, habbo);
+            });
+        }
+    }
+
+    private void postDirectlyToMarkers(Room room, Habbo habbo) {
+        List<HabboItem> markers = new ArrayList<>(room.getRoomSpecialTypes().getItemsOfType(InteractionWiredHighscore.class));
+        if (markers.isEmpty()) return;
+
+        int delta = this.operation == OPERATION_REMOVE ? -this.points : this.points;
+        int userId = habbo.getHabboInfo().getId();
+
+        for (HabboItem marker : markers) {
+            Emulator.getGameEnvironment().getItemManager().getHighscoreManager().addHighscoreData(
+                    new WiredHighscoreDataEntry(marker.getId(), Collections.singletonList(userId), delta, false, Emulator.getIntUnixTimestamp())
+            );
+        }
+
+        for (HabboItem marker : markers) {
+            ((InteractionWiredHighscore) marker).reloadData();
+            room.updateItem(marker);
         }
     }
 
