@@ -105,10 +105,6 @@ public class WiredEffectMoveRotateFurni extends InteractionWiredEffect implement
                 boolean isRotating = item.getRotation() != newRotation;
                 boolean slideAnimation = isMoving;
 
-                System.out.println("[MoveRotateDebug] item=" + item.getId() + " direction=" + this.direction + " rotation=" + this.rotation
-                        + " old=(" + oldLocation.x + "," + oldLocation.y + ") new=" + (newLocation == null ? "null" : "(" + newLocation.x + "," + newLocation.y + ")")
-                        + " newState=" + (newLocation == null ? "null" : newLocation.state) + " isMoving=" + isMoving + " isRotating=" + isRotating);
-
                 if (newLocation == null || newLocation.state == RoomTileState.INVALID || (!isMoving && !isRotating)) {
                     continue;
                 }
@@ -120,7 +116,6 @@ public class WiredEffectMoveRotateFurni extends InteractionWiredEffect implement
                         .updateClientImmediately(!slideAnimation)
                         .animationTimeMs(WiredMovement.highFrequencyAnimationTime(ctx))
                         .allowSameTileRotation(true));
-                System.out.println("[MoveRotateDebug] moveFurni returned " + moved);
                 if(moved) {
                     this.itemCooldowns.put(item, now);
                 }
