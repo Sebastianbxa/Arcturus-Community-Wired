@@ -842,21 +842,41 @@ public class RoomManager {
             allFloorItems.forEach(new TObjectProcedure<HabboItem>() {
                 @Override
                 public boolean execute(HabboItem object) {
-                    if (room.isHideWired() && object instanceof InteractionWired)
-                        return true;
+                    // Un solo item con base huerfana (getBaseItem() null, p.ej. un
+                    // items_base borrado con el item todavia en la sala) tiraba
+                    // NullPointerException ACA, abortaba forEach entero, y la sala
+                    // se quedaba sin mandar el paquete de floor items -- ni furni
+                    // normal ni wired, sin log en ningun lado porque esto corre
+                    // antes de que exista RoomFloorItemsComposer. Un item roto ya
+                    // no debe tumbar a los otros 62.
+                    try {
+                        if (room.isHideWired() && object instanceof InteractionWired)
+                            return true;
 
-                    if (room.isHideInvisibleFurni() && Room.INVISIBLE_ITEM_NAMES.contains(object.getBaseItem().getName())){
-                        return true;
-                    }
+                        if (object.getBaseItem() == null) {
+                            org.slf4j.LoggerFactory.getLogger(RoomManager.class).error(
+                                    "[FLOORITEMS] item id={} room={} sin BaseItem (items_base huerfano) -- omitido",
+                                    object.getId(), room.getId());
+                            return true;
+                        }
 
-                    if (room.isItemHiddenByAreaHide(object)) {
-                        return true;
-                    }
+                        if (room.isHideInvisibleFurni() && Room.INVISIBLE_ITEM_NAMES.contains(object.getBaseItem().getName())){
+                            return true;
+                        }
 
-                    floorItems.add(object);
-                    if (floorItems.size() == 250) {
-                        habbo.getClient().sendResponse(new RoomFloorItemsComposer(room.getFurniOwnerNames(), floorItems));
-                        floorItems.clear();
+                        if (room.isItemHiddenByAreaHide(object)) {
+                            return true;
+                        }
+
+                        floorItems.add(object);
+                        if (floorItems.size() == 250) {
+                            habbo.getClient().sendResponse(new RoomFloorItemsComposer(room.getFurniOwnerNames(), floorItems));
+                            floorItems.clear();
+                        }
+                    } catch (Exception e) {
+                        org.slf4j.LoggerFactory.getLogger(RoomManager.class).error(
+                                "[FLOORITEMS] EXCEPTION item id={} room={} -- omitido, sigue con el resto",
+                                object.getId(), room.getId(), e);
                     }
 
                     return true;
