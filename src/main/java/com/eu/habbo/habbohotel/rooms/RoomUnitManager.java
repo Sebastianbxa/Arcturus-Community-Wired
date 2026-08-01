@@ -1111,7 +1111,7 @@ public class RoomUnitManager {
         for (Habbo habbo : this.currentHabbos.values()) {
             if (habbo != null && habbo.getRoomUnit() != null && habbo.getRoomUnit().getRoom() != null
                 && habbo.getRoomUnit().getRoom().getId() == this.room.getId() && (atTile == null
-                || habbo.getRoomUnit().getCurrentLocation() == atTile)) {
+                || atTile.equals(habbo.getRoomUnit().getCurrentLocation()))) {
                 units.add(habbo.getRoomUnit());
             }
         }
@@ -1119,7 +1119,7 @@ public class RoomUnitManager {
         for (Pet pet : this.currentPets.valueCollection()) {
             if (pet != null && pet.getRoomUnit() != null && pet.getRoomUnit().getRoom() != null
                 && pet.getRoomUnit().getRoom().getId() == this.room.getId() && (atTile == null
-                || pet.getRoomUnit().getCurrentLocation() == atTile)) {
+                || atTile.equals(pet.getRoomUnit().getCurrentLocation()))) {
                 units.add(pet.getRoomUnit());
             }
         }
@@ -1127,7 +1127,7 @@ public class RoomUnitManager {
         for (Bot bot : this.currentBots.valueCollection()) {
             if (bot != null && bot.getRoomUnit() != null && bot.getRoomUnit().getRoom() != null
                 && bot.getRoomUnit().getRoom().getId() == this.room.getId() && (atTile == null
-                || bot.getRoomUnit().getCurrentLocation() == atTile)) {
+                || atTile.equals(bot.getRoomUnit().getCurrentLocation()))) {
                 units.add(bot.getRoomUnit());
             }
         }
