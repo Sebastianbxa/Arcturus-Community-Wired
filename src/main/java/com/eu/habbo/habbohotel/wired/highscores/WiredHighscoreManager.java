@@ -3,7 +3,9 @@ package com.eu.habbo.habbohotel.wired.highscores;
 import com.eu.habbo.Emulator;
 import com.eu.habbo.plugin.EventHandler;
 import com.eu.habbo.plugin.events.emulator.EmulatorLoadedEvent;
+import com.eu.habbo.habbohotel.users.Habbo;
 import com.eu.habbo.habbohotel.users.HabboInfo;
+import com.eu.habbo.habbohotel.users.HabboManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -140,9 +142,14 @@ public class WiredHighscoreManager {
     public List<WiredHighscoreRow> getHighscoreRowsForItem(int itemId, WiredHighscoreClearType clearType, WiredHighscoreScoreType scoreType) {
         if (!this.data.containsKey(itemId)) return null;
 
-        Stream<WiredHighscoreRow> highscores = new ArrayList<>(this.data.get(itemId)).stream()
+        List<WiredHighscoreDataEntry> filtered = new ArrayList<>(this.data.get(itemId)).stream()
                 .filter(entry -> this.timeMatchesEntry(entry, clearType) && (scoreType != WiredHighscoreScoreType.MOSTWIN || entry.isWin()))
-                .map(this::createHighscoreRow);
+                .collect(Collectors.toList());
+
+        Map<Integer, HabboInfo> habboInfoLookup = this.resolveHabboInfos(filtered);
+
+        Stream<WiredHighscoreRow> highscores = filtered.stream()
+                .map(entry -> this.createHighscoreRow(entry, habboInfoLookup));
 
         if (scoreType == WiredHighscoreScoreType.CLASSIC) {
             return highscores
@@ -185,13 +192,46 @@ public class WiredHighscoreManager {
         return null;
     }
 
-    private WiredHighscoreRow createHighscoreRow(WiredHighscoreDataEntry entry) {
+    /**
+     * Resuelve todos los HabboInfo de una tanda de entries en 1 sola query
+     * batched (usuarios offline) en vez de 1 query por usuario por fila --
+     * items con muchas filas acumuladas hacian esto N+1 y frenaban la carga
+     * de la sala entera (createHighscoreRow corre en el constructor del
+     * Marcador, o sea en cada room load).
+     */
+    private Map<Integer, HabboInfo> resolveHabboInfos(List<WiredHighscoreDataEntry> entries) {
+        Set<Integer> userIds = new HashSet<>();
+        for (WiredHighscoreDataEntry entry : entries) {
+            userIds.addAll(entry.getUserIds());
+        }
+
+        Map<Integer, HabboInfo> lookup = new HashMap<>();
+        List<Integer> offlineIds = new ArrayList<>();
+
+        for (Integer userId : userIds) {
+            Habbo online = Emulator.getGameEnvironment().getHabboManager().getHabbo(userId);
+
+            if (online != null) {
+                lookup.put(userId, online.getHabboInfo());
+            } else {
+                offlineIds.add(userId);
+            }
+        }
+
+        if (!offlineIds.isEmpty()) {
+            lookup.putAll(HabboManager.getOfflineHabboInfoBatch(offlineIds));
+        }
+
+        return lookup;
+    }
+
+    private WiredHighscoreRow createHighscoreRow(WiredHighscoreDataEntry entry, Map<Integer, HabboInfo> habboInfoLookup) {
         List<String> users = new ArrayList<>();
         List<String> looks = new ArrayList<>();
         List<Integer> userIds = new ArrayList<>();
 
         for (Integer userId : entry.getUserIds()) {
-            HabboInfo info = Emulator.getGameEnvironment().getHabboManager().getHabboInfo(userId);
+            HabboInfo info = habboInfoLookup.get(userId);
 
             if (info == null) continue;
 

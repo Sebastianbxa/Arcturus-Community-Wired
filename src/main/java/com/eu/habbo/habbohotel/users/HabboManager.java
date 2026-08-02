@@ -60,6 +60,31 @@ public class HabboManager {
         return info;
     }
 
+    public static Map<Integer, HabboInfo> getOfflineHabboInfoBatch(java.util.Collection<Integer> ids) {
+        Map<Integer, HabboInfo> result = new java.util.HashMap<>();
+        if (ids == null || ids.isEmpty()) return result;
+
+        String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+
+        try (Connection connection = Emulator.getDatabase().getDataSource().getConnection(); PreparedStatement statement = connection.prepareStatement("SELECT * FROM users WHERE id IN (" + placeholders + ")")) {
+            int i = 1;
+            for (int id : ids) {
+                statement.setInt(i++, id);
+            }
+
+            try (ResultSet set = statement.executeQuery()) {
+                while (set.next()) {
+                    HabboInfo info = new HabboInfo(set);
+                    result.put(info.getId(), info);
+                }
+            }
+        } catch (SQLException e) {
+            LOGGER.error("Caught SQL exception", e);
+        }
+
+        return result;
+    }
+
     public static HabboInfo getOfflineHabboInfo(String username) {
         HabboInfo info = null;
 
