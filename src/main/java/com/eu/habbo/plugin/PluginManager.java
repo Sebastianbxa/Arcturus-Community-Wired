@@ -116,7 +116,7 @@ public class PluginManager {
         RoomManager.MAXIMUM_ROOMS_USER = Emulator.getConfig().getInt("hotel.users.max.rooms", 50);
         RoomManager.MAXIMUM_ROOMS_HC = Emulator.getConfig().getInt("hotel.users.max.rooms.hc", 75);
         RoomManager.HOME_ROOM_ID = Emulator.getConfig().getInt("hotel.home.room");
-        WiredManager.MAXIMUM_FURNI_SELECTION = Emulator.getConfig().getInt("hotel.wired.furni.selection.count");
+        WiredManager.MAXIMUM_FURNI_SELECTION = Emulator.getConfig().getInt("hotel.wired.furni.selection.count", 20);
         WiredEngine.MAX_RECURSION_DEPTH = Emulator.getConfig().getInt("wired.abuse.max.recursion.depth", 10);
         WiredEngine.MAX_EVENTS_PER_WINDOW = Emulator.getConfig().getInt("wired.abuse.max.events.per.window", 100);
         WiredEngine.RATE_LIMIT_WINDOW_MS = Emulator.getConfig().getInt("wired.abuse.rate.limit.window.ms", 10000);
