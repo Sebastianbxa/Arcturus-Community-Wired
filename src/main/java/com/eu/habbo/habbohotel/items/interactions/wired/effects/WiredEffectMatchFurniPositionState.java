@@ -71,49 +71,80 @@ public class WiredEffectMatchFurniPositionState extends InteractionWiredEffect i
 
         WiredMovement.beginFurniMutationBatch(ctx);
         try {
-            for (WiredMatchFurniSetting setting : this.settings) {
-                HabboItem item = room.getHabboItem(setting.item_id);
-                if (item != null && sourceItems.contains(item)) {
-                    if (this.state && (this.checkForWiredResetPermission && item.allowWiredResetState())) {
-                        if (!setting.state.equals(" ") && !item.getExtradata().equals(setting.state)) {
-                            item.setExtradata(setting.state);
-                            room.updateItemState(item);
-                        }
-                    }
-
-                    RoomTile oldLocation = room.getLayout().getTile(item.getX(), item.getY());
-                    if (oldLocation == null) continue;
-
-                    if(this.direction && !this.position) {
-                        if(item.getRotation() != setting.rotation && room.furnitureFitsAt(oldLocation, item, setting.rotation, false, ignoreFurniStacking) == FurnitureMovementError.NONE) {
-                            WiredMovement.moveFurni(ctx, item, oldLocation, setting.rotation, MoveOptions.instant().allowSameTileRotation(true));
-                        }
-                    }
-                    else if(this.position) {
-                        RoomTile newLocation = room.getLayout().getTile((short) setting.x, (short) setting.y);
-                        int newRotation = this.direction ? setting.rotation : item.getRotation();
-                        boolean spatialMoveQueued = false;
-
-                        if(newLocation != null && newLocation.state != RoomTileState.INVALID && (newLocation != oldLocation || newRotation != item.getRotation()) && room.furnitureFitsAt(newLocation, item, newRotation, true, ignoreFurniStacking) == FurnitureMovementError.NONE) {
-                            spatialMoveQueued = WiredMovement.moveFurni(ctx, item, newLocation, newRotation, MoveOptions.slide()
-                                    .allowSameTileRotation(true)
-                                    .afterMove(() -> this.applyAltitude(ctx, room, item, setting, false)));
-                        }
-
-                        // Apply altitude directly when no spatial move was queued (blocked or already at correct tile)
-                        if (!spatialMoveQueued && this.altitude) {
-                            this.applyAltitude(ctx, room, item, setting, true);
-                        }
-                    }
-
-                    if (this.altitude && !this.position) {
-                        this.applyAltitude(ctx, room, item, setting, true);
+            // Furnis being restored together can currently sit on each other's snapshot
+            // tile (e.g. two items that swapped places mid-game), so a single pass can find
+            // a move blocked that would succeed once another item in this same batch moves
+            // out of the way first. Retry in passes until nothing moves anymore.
+            // ponytail: doesn't resolve a hard 2-cycle (A and B want exactly each other's
+            // current tile) — needs a temp-tile detour for that, add if it comes up.
+            List<WiredMatchFurniSetting> pending = new ArrayList<>(this.settings);
+            boolean progress = true;
+            while (!pending.isEmpty() && progress) {
+                progress = false;
+                java.util.Iterator<WiredMatchFurniSetting> it = pending.iterator();
+                while (it.hasNext()) {
+                    if (this.restoreOne(ctx, room, it.next(), sourceItems, ignoreFurniStacking)) {
+                        it.remove();
+                        progress = true;
                     }
                 }
             }
         } finally {
             WiredMovement.endFurniMutationBatch(ctx);
         }
+    }
+
+    /**
+     * @return true if this item is done (moved, no-op, or terminally invalid) and should
+     * leave the retry queue; false if it's still blocked by another furni's current
+     * position and may succeed on a later pass.
+     */
+    private boolean restoreOne(WiredContext ctx, Room room, WiredMatchFurniSetting setting, THashSet<HabboItem> sourceItems, boolean ignoreFurniStacking) {
+        HabboItem item = room.getHabboItem(setting.item_id);
+        if (item == null || !sourceItems.contains(item)) {
+            return true;
+        }
+
+        if (this.state && (this.checkForWiredResetPermission && item.allowWiredResetState())) {
+            if (!setting.state.equals(" ") && !item.getExtradata().equals(setting.state)) {
+                item.setExtradata(setting.state);
+                room.updateItemState(item);
+            }
+        }
+
+        RoomTile oldLocation = room.getLayout().getTile(item.getX(), item.getY());
+        if (oldLocation == null) {
+            return true;
+        }
+
+        if (this.direction && !this.position) {
+            if (item.getRotation() != setting.rotation) {
+                if (room.furnitureFitsAt(oldLocation, item, setting.rotation, false, ignoreFurniStacking) != FurnitureMovementError.NONE) {
+                    return false;
+                }
+                WiredMovement.moveFurni(ctx, item, oldLocation, setting.rotation, MoveOptions.instant().allowSameTileRotation(true));
+            }
+        } else if (this.position) {
+            RoomTile newLocation = room.getLayout().getTile((short) setting.x, (short) setting.y);
+            int newRotation = this.direction ? setting.rotation : item.getRotation();
+
+            if (newLocation != null && newLocation.state != RoomTileState.INVALID && (newLocation != oldLocation || newRotation != item.getRotation())) {
+                if (room.furnitureFitsAt(newLocation, item, newRotation, true, ignoreFurniStacking) != FurnitureMovementError.NONE) {
+                    return false;
+                }
+                WiredMovement.moveFurni(ctx, item, newLocation, newRotation, MoveOptions.slide()
+                        .allowSameTileRotation(true)
+                        .afterMove(() -> this.applyAltitude(ctx, room, item, setting, false)));
+            } else if (this.altitude) {
+                this.applyAltitude(ctx, room, item, setting, true);
+            }
+        }
+
+        if (this.altitude && !this.position) {
+            this.applyAltitude(ctx, room, item, setting, true);
+        }
+
+        return true;
     }
 
     @Deprecated

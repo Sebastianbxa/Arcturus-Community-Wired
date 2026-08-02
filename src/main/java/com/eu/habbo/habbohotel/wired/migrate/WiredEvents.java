@@ -184,6 +184,7 @@ public final class WiredEvents {
         return WiredEvent.builder(WiredEvent.Type.NEW_FURNI_STATE_CHANGE, room)
                 .sourceItem(item)
                 .tile(tile)
+                .triggeredByEffect(true)
                 .build();
     }
 

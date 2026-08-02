@@ -23,15 +23,12 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 public class WiredEffectMoveFurniTowardsAvatar extends InteractionWiredEffect {
     public static final WiredEffectType type = WiredEffectType.MOVE_FURNI_TOWARDS_AVATAR;
 
     private THashSet<HabboItem> items = new THashSet<>();
-    private final Map<Integer, RoomUserRotation> runtimeDirections = new ConcurrentHashMap<>();
 
     public WiredEffectMoveFurniTowardsAvatar(ResultSet set, Item baseItem) throws SQLException {
         super(set, baseItem);
@@ -56,7 +53,6 @@ public class WiredEffectMoveFurniTowardsAvatar extends InteractionWiredEffect {
 
         this.items.removeAll(items);
         sourceItems.removeAll(items);
-        this.runtimeDirections.keySet().removeIf(itemId -> room.getHabboItem(itemId) == null);
 
         if (sourceItems.isEmpty() || !WiredManager.getUsageTracker().tryConsumeRuntimeItems(room, sourceItems.size())) {
             return;
@@ -79,7 +75,7 @@ public class WiredEffectMoveFurniTowardsAvatar extends InteractionWiredEffect {
                     int y = step[1];
 
                     RoomTile oldLocation = room.getLayout().getTile(item.getX(), item.getY());
-                    RoomUserRotation direction = this.runtimeDirections.getOrDefault(item.getId(), directionFromStep(x, y));
+                    RoomUserRotation direction = directionFromStep(x, y);
 
                     // Try primary direction, then rotate 90° CW up to 3 more times (4 attempts total)
                     for (int tries = 0; tries < 4; tries++) {
@@ -108,7 +104,6 @@ public class WiredEffectMoveFurniTowardsAvatar extends InteractionWiredEffect {
                                         .afterMove(() -> WiredMoveFurniAvatarCollision.triggerCollisionAfterAvatarStep(room, target));
                             }
                             WiredMovement.moveFurni(ctx, item, candidate, item.getRotation(), options);
-                            this.runtimeDirections.put(item.getId(), direction);
                             break;
                         }
                         direction = RoomUserRotation.clockwise(RoomUserRotation.clockwise(direction));
@@ -175,7 +170,6 @@ public class WiredEffectMoveFurniTowardsAvatar extends InteractionWiredEffect {
     @Override
     public void loadWiredData(ResultSet set, Room room) throws SQLException {
         this.items = new THashSet<>();
-        this.runtimeDirections.clear();
         String wiredData = set.getString("wired_data");
         this.loadSourceData(wiredData);
 
@@ -210,7 +204,6 @@ public class WiredEffectMoveFurniTowardsAvatar extends InteractionWiredEffect {
     @Override
     public void onPickUp() {
         this.items.clear();
-        this.runtimeDirections.clear();
         this.setDelay(0);
         this.resetSources();
     }
@@ -276,7 +269,6 @@ public class WiredEffectMoveFurniTowardsAvatar extends InteractionWiredEffect {
 
         this.items.clear();
         this.items.addAll(newItems);
-        this.runtimeDirections.clear();
         this.setDelay(delay);
         this.saveFurniSource(settings, 0);
 
